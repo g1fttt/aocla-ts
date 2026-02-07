@@ -2,20 +2,24 @@ import { ObjectKind } from "./vm.ts"
 import type { Object } from "./vm.ts"
 
 export class Parser {
-  source: string
-  currentIndex: number
+  private readonly source: string
+  private globalIndex: number
+  private relativeIndex: number
+  private line: number
 
-  constructor(source: string) {
+  public constructor(source: string) {
     this.source = "[" + source + "]"
-    this.currentIndex = 0
+    this.globalIndex = 0
+    this.relativeIndex = 0
+    this.line = 0
   }
 
-  parseObject(): Object {
+  public parseObject(): Object {
     this.skipWhitespace()
 
     const currentChar = this.currentChar()
-    if (!currentChar || this.currentIndex >= this.source.length) {
-      throw new Error("Out of bound")
+    if (!currentChar || this.globalIndex >= this.source.length) {
+      throw this.error("Out of bound")
     }
 
     if (Parser.isSymbol(currentChar)) {
@@ -31,14 +35,14 @@ export class Parser {
     } else if (currentChar === "'") {
       return this.parseQuoted()
     } else {
-      throw new Error(`Invalid symbol: ${currentChar}`)
+      throw this.error(`Invalid symbol: ${currentChar}`)
     }
   }
 
-  parseQuoted(): Object {
+  private parseQuoted(): Object {
     const nextChar = this.nextCharAdvance()
     if (!nextChar) {
-      throw new Error("Nothing to quote")
+      throw this.error("Nothing to quote")
     }
 
     if (Parser.isSymbol(nextChar)) {
@@ -46,12 +50,12 @@ export class Parser {
     } else if (nextChar === "(") {
       return this.parseSequence({ isQuoted: true })
     } else {
-      throw new Error("Only Symbol and Tuple are allowed to be quoted")
+      throw this.error("Only Symbol and Tuple are allowed to be quoted")
     }
   }
 
-  parseSymbol(args: { isQuoted: boolean }): Object {
-    const startIndex = this.currentIndex
+  private parseSymbol(args: { isQuoted: boolean }): Object {
+    const startIndex = this.globalIndex
 
     while (true) {
       let currentChar = this.currentChar()
@@ -66,13 +70,13 @@ export class Parser {
       this.skipChar()
     }
 
-    const symbol = this.source.slice(startIndex, this.currentIndex)
+    const symbol = this.source.slice(startIndex, this.globalIndex)
 
     return { kind: ObjectKind.Symbol, value: [symbol, args.isQuoted] }
   }
 
-  parseInteger(): Object {
-    const startIndex = this.currentIndex
+  private parseInteger(): Object {
+    const startIndex = this.globalIndex
 
     while (true) {
       const currentChar = this.currentChar()
@@ -87,15 +91,15 @@ export class Parser {
       this.skipChar()
     }
 
-    const integerAsString = this.source.slice(startIndex, this.currentIndex)
+    const integerAsString = this.source.slice(startIndex, this.globalIndex)
 
     return { kind: ObjectKind.Integer, value: parseInt(integerAsString) }
   }
 
-  parseBoolean(): Object {
+  private parseBoolean(): Object {
     const state = this.nextCharAdvance()
     if (state !== "t" && state !== "f") {
-      throw new Error("Booleans are either #t or #f")
+      throw this.error("Booleans are either #t or #f")
     }
 
     this.skipChar()
@@ -103,13 +107,13 @@ export class Parser {
     return { kind: ObjectKind.Boolean, value: state === "t" }
   }
 
-  parseString(): Object {
-    const startIndex = this.currentIndex
+  private parseString(): Object {
+    const startIndex = this.globalIndex
 
     while (true) {
       const currentChar = this.nextCharAdvance()
       if (!currentChar) {
-        throw new Error("String never closed")
+        throw this.error("String was never closed")
       }
 
       if (currentChar === '"') {
@@ -119,12 +123,22 @@ export class Parser {
       }
     }
 
-    const string = this.source.slice(startIndex + 1, this.currentIndex - 1)
+    const string = this.source.slice(startIndex + 1, this.globalIndex - 1)
 
-    return { kind: ObjectKind.String, value: string }
+    const escapeSequences: Record<string, string> = {
+      n: "\n",
+      t: "\t",
+      r: "\r",
+    }
+
+    const unescapedString = string.replace(/\\(.)/g, (match, char) => {
+      return escapeSequences[char] || match
+    })
+
+    return { kind: ObjectKind.String, value: unescapedString }
   }
 
-  parseSequence(args: { isQuoted: boolean }): Object {
+  private parseSequence(args: { isQuoted: boolean }): Object {
     const leftBracket = this.currentCharAdvance()
 
     let rightBracket: string | undefined
@@ -146,7 +160,7 @@ export class Parser {
 
       const currentChar = this.currentChar()
       if (!currentChar) {
-        throw new Error("Sequence never closed")
+        throw this.error("Sequence was never closed")
       }
 
       if (currentChar === rightBracket) {
@@ -167,43 +181,56 @@ export class Parser {
     }
   }
 
-  skipWhitespace() {
-    while (true) {
+  private skipWhitespace() {
+    outerLoop: while (true) {
       const currentChar = this.currentChar()
-      if (!currentChar || ![" ", "\n"].includes(currentChar)) {
+      if (!currentChar) {
         break
+      }
+
+      switch (currentChar) {
+        case " ":
+          break
+        case "\n":
+          ++this.line
+          this.relativeIndex = 0
+
+          break
+        default:
+          break outerLoop
       }
 
       this.skipChar()
     }
   }
 
-  currentChar(): string | undefined {
-    return this.source[this.currentIndex]
+  private currentChar(): string | undefined {
+    return this.source[this.globalIndex]
   }
 
-  currentCharAdvance(): string | undefined {
-    return this.source[this.currentIndex++]
+  private currentCharAdvance(): string | undefined {
+    return this.source[this.globalIndex++]
   }
 
-  nextCharAdvance(): string | undefined {
-    return this.source[++this.currentIndex]
+  private nextCharAdvance(): string | undefined {
+    return this.source[++this.globalIndex]
   }
 
-  nextChar(): string | undefined {
-    return this.source[this.currentIndex + 1]
+  private skipChar() {
+    ++this.globalIndex
+    ++this.relativeIndex
   }
 
-  skipChar() {
-    ++this.currentIndex
+  private error(message: string): ParserError {
+    return new ParserError(message, this.line + 1, this.relativeIndex + 1)
   }
 
-  static isNumeric(char: string): boolean {
+  private static isNumeric(char: string): boolean {
     // TODO: negative numbers
     return char >= "0" && char <= "9"
   }
 
-  static isSymbol(char: string): boolean {
+  private static isSymbol(char: string): boolean {
     // prettier-ignore
     const specialSymbols = [
       "_", "@", "$", "+",
@@ -217,5 +244,21 @@ export class Parser {
       (char >= "A" && char <= "Z") ||
       specialSymbols.includes(char)
     )
+  }
+}
+
+export class ParserError extends Error {
+  public readonly row: number
+  public readonly column: number
+
+  public constructor(message: string, row: number, column: number) {
+    super(message)
+
+    this.row = row
+    this.column = column
+  }
+
+  public formattedMessage(): string {
+    return `Error occured during parsing phase at ${this.row}:${this.column}. ${this.message}.`
   }
 }

@@ -17,7 +17,7 @@ export type Object =
   | { kind: ObjectKind.Boolean; value: boolean }
   | { kind: ObjectKind.Symbol; value: [string, isQuoted: boolean] }
 
-type VirtualProcedure = (ctx: Context) => void
+export type VirtualProcedure = (ctx: Context) => void
 
 enum ProcedureKind {
   Native,
@@ -29,131 +29,25 @@ type Procedure =
   | { kind: ProcedureKind.Virtual; value: VirtualProcedure }
 
 export class Context {
-  stack: Array<Object>
-  procedures: Map<string, Procedure>
-  currentFrame: Map<string, Object>
-  currentProcedureName: string | undefined
+  public stack: Array<Object>
+  private procedures: Map<string, Procedure>
+  private currentFrame: Map<string, Object>
+  private currentProcedureName: string | undefined
 
-  constructor() {
+  public constructor() {
     this.stack = []
     this.procedures = new Map()
     this.currentFrame = new Map()
     this.setupBuiltins()
   }
 
-  addNativeProcedure(name: string, bodySource: string) {
-    const parser = new Parser(bodySource)
-
-    this.procedures.set(name, {
-      kind: ProcedureKind.Native,
-      value: parser.parseObject(),
-    })
-  }
-
-  addVirtualProcedure(name: string, proc: VirtualProcedure) {
-    this.procedures.set(name, {
-      kind: ProcedureKind.Virtual,
-      value: proc,
-    })
-  }
-
-  setupBuiltins() {
-    this.addVirtualProcedure("print", procedurePrint)
-  }
-
-  callNativeProcedure(name: string, procedureBody: Object) {
-    const frameTemp = structuredClone(this.currentFrame)
-
-    this.callVirtualProcedure(name, (ctx) => ctx.evalObject(procedureBody))
-    this.currentFrame = frameTemp
-  }
-
-  callVirtualProcedure(name: string, procedure: VirtualProcedure) {
-    const procedureNameTemp = this.currentProcedureName
-
-    this.currentProcedureName = name
-    {
-      procedure(this)
-    }
-    this.currentProcedureName = procedureNameTemp
-  }
-
-  dequoteAndPushToStack(object: Object) {
-    const isQuoted = false
-
-    switch (object.kind) {
-      case ObjectKind.Tuple:
-        const tuple = object.value[0]!
-
-        this.stack.push({ kind: ObjectKind.Tuple, value: [tuple, isQuoted] })
-
-        break
-      case ObjectKind.Symbol:
-        const name = object.value[0]!
-
-        this.stack.push({
-          kind: ObjectKind.Symbol,
-          value: [name, isQuoted],
-        })
-
-        break
-      default: // Unreachable
-    }
-  }
-
-  evalTuple(tuple: Array<Object>) {
-    if (tuple.length > this.stack.length) {
-      throw new Error("Out of stack while capturing local variable")
-    }
-
-    for (const object of tuple.toReversed()) {
-      if (object.kind !== ObjectKind.Symbol) {
-        throw new Error("Only objects of type Symbol can be captured")
-      }
-
-      const symbolName = object.value[0]!
-      const stackObject = this.stack.pop()!
-
-      this.currentFrame.set(symbolName, stackObject)
-    }
-  }
-
-  evalSymbol(symbolName: string) {
-    if (symbolName.startsWith("$")) {
-      const strippedSymbolName = symbolName.slice(1)
-
-      const variable = this.currentFrame.get(strippedSymbolName)
-      if (!variable) {
-        throw new Error(`Unbound local variable: ${strippedSymbolName}`)
-      }
-
-      this.stack.push(variable)
-    } else {
-      const procedure = this.procedures.get(symbolName)
-      if (!procedure) {
-        throw new Error(`Unbound procedure: ${symbolName}`)
-      }
-
-      switch (procedure.kind) {
-        case ProcedureKind.Native:
-          this.callNativeProcedure(symbolName, procedure.value)
-
-          break
-        case ProcedureKind.Virtual:
-          this.callVirtualProcedure(symbolName, procedure.value)
-
-          break
-      }
-    }
-  }
-
-  eval(source: string) {
+  public eval(source: string) {
     const parser = new Parser(source)
 
     this.evalObject(parser.parseObject())
   }
 
-  evalObject(rootObject: Object) {
+  public evalObject(rootObject: Object) {
     if (rootObject.kind !== ObjectKind.List) {
       throw new Error("Root object must be of type List")
     }
@@ -178,6 +72,112 @@ export class Context {
         }
         default:
           this.stack.push(object)
+
+          break
+      }
+    }
+  }
+
+  public addNativeProcedure(name: string, bodySource: string) {
+    const parser = new Parser(bodySource)
+
+    this.procedures.set(name, {
+      kind: ProcedureKind.Native,
+      value: parser.parseObject(),
+    })
+  }
+
+  public addVirtualProcedure(name: string, proc: VirtualProcedure) {
+    this.procedures.set(name, {
+      kind: ProcedureKind.Virtual,
+      value: proc,
+    })
+  }
+
+  private setupBuiltins() {
+    this.addVirtualProcedure("print", procedurePrint)
+  }
+
+  private callNativeProcedure(name: string, procedureBody: Object) {
+    const frameTemp = structuredClone(this.currentFrame)
+
+    this.callVirtualProcedure(name, (ctx) => ctx.evalObject(procedureBody))
+    this.currentFrame = frameTemp
+  }
+
+  private callVirtualProcedure(name: string, procedure: VirtualProcedure) {
+    const procedureNameTemp = this.currentProcedureName
+
+    this.currentProcedureName = name
+    {
+      procedure(this)
+    }
+    this.currentProcedureName = procedureNameTemp
+  }
+
+  private dequoteAndPushToStack(object: Object) {
+    const isQuoted = false
+
+    switch (object.kind) {
+      case ObjectKind.Tuple:
+        const tuple = object.value[0]!
+
+        this.stack.push({ kind: ObjectKind.Tuple, value: [tuple, isQuoted] })
+
+        break
+      case ObjectKind.Symbol:
+        const name = object.value[0]!
+
+        this.stack.push({
+          kind: ObjectKind.Symbol,
+          value: [name, isQuoted],
+        })
+
+        break
+      default: // Unreachable
+    }
+  }
+
+  private evalTuple(tuple: Array<Object>) {
+    if (tuple.length > this.stack.length) {
+      throw new Error("Out of stack while capturing local variable")
+    }
+
+    for (const object of tuple.toReversed()) {
+      if (object.kind !== ObjectKind.Symbol) {
+        throw new Error("Only objects of type Symbol can be captured")
+      }
+
+      const symbolName = object.value[0]!
+      const stackObject = this.stack.pop()!
+
+      this.currentFrame.set(symbolName, stackObject)
+    }
+  }
+
+  private evalSymbol(symbolName: string) {
+    if (symbolName.startsWith("$")) {
+      const strippedSymbolName = symbolName.slice(1)
+
+      const variable = this.currentFrame.get(strippedSymbolName)
+      if (!variable) {
+        throw new Error(`Unbound local variable: ${strippedSymbolName}`)
+      }
+
+      this.stack.push(variable)
+    } else {
+      const procedure = this.procedures.get(symbolName)
+      if (!procedure) {
+        throw new Error(`Unbound procedure: ${symbolName}`)
+      }
+
+      switch (procedure.kind) {
+        case ProcedureKind.Native:
+          this.callNativeProcedure(symbolName, procedure.value)
+
+          break
+        case ProcedureKind.Virtual:
+          this.callVirtualProcedure(symbolName, procedure.value)
 
           break
       }
