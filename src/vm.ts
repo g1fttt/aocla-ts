@@ -224,11 +224,13 @@ function procedureDrop(ctx: Context) {
   }
 }
 
+type MatchedBranch = [captureTuple: Array<Object> | undefined, handler: Object]
+
 class Match {
-  public readonly selector: Object
-  public readonly branches: Map<any, Object>
-  public readonly defaultBranch:
-    | [pattern: Array<Object>, handler: Object]
+  private readonly selector: Object
+  private readonly branches: Map<any, Object>
+  private readonly defaultBranch:
+    | [captureTuple: Array<Object>, handler: Object]
     | undefined
 
   public constructor(ctx: Context) {
@@ -240,6 +242,7 @@ class Match {
         throw new Error("Cannot match due to empty stack")
       }
 
+      // NOTE: Lists are not allowed to be used as selectors. Bug or feature? Hmmm...
       if (stackObject.kind !== ObjectKind.List) {
         if (this.branches.size === 0 && !this.defaultBranch) {
           throw new Error("Cannot match due to missing branches")
@@ -277,24 +280,32 @@ class Match {
       }
     }
   }
+
+  public matchedBranch(): MatchedBranch | undefined {
+    const handler = this.branches.get(this.selector.value)
+    if (handler) {
+      return [undefined, handler]
+    }
+
+    if (this.defaultBranch) {
+      return this.defaultBranch
+    }
+  }
 }
 
 function procedureMatch(ctx: Context) {
   const match = new Match(ctx)
 
-  const branch = match.branches.get(match.selector.value)
-  if (branch) {
-    ctx.evalObject(branch)
-
+  const matchedBranch = match.matchedBranch()
+  if (!matchedBranch) {
     return
   }
 
-  if (!match.defaultBranch) {
-    return
+  const [captureTuple, handler] = matchedBranch
+
+  if (captureTuple) {
+    ctx.evalTuple(captureTuple)
   }
 
-  const [captureTuple, handler] = match.defaultBranch
-
-  ctx.evalTuple(captureTuple)
   ctx.evalObject(handler)
 }
