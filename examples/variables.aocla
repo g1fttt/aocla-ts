@@ -1,0 +1,11 @@
+1 3 7 (one three seven)
+
+"The number is: " print drop
+
+@seven @three @three @one
+print drop
+print drop
+print drop
+print drop
+
+"\n" print drop

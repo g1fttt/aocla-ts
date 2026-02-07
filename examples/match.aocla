@@ -1,0 +1,7 @@
+3 (n)
+
+@n
+  [0 ["zero\n" print]]
+  [1 ["one\n" print]]
+  [(x) [@x print "\n" print]]
+match

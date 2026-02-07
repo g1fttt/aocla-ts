@@ -78,6 +78,52 @@ export class Context {
     }
   }
 
+  public evalTuple(tuple: Array<Object>) {
+    if (tuple.length > this.stack.length) {
+      throw new Error("Out of stack while capturing local variable")
+    }
+
+    for (const object of tuple.toReversed()) {
+      if (object.kind !== ObjectKind.Symbol) {
+        throw new Error("Only objects of type Symbol can be captured")
+      }
+
+      const symbolName = object.value[0]!
+      const stackObject = this.stack.pop()!
+
+      this.currentFrame.set(symbolName, stackObject)
+    }
+  }
+
+  public evalSymbol(symbolName: string) {
+    if (symbolName.startsWith("@")) {
+      const strippedSymbolName = symbolName.slice(1)
+
+      const variable = this.currentFrame.get(strippedSymbolName)
+      if (!variable) {
+        throw new Error(`Unbound local variable: ${strippedSymbolName}`)
+      }
+
+      this.stack.push(variable)
+    } else {
+      const procedure = this.procedures.get(symbolName)
+      if (!procedure) {
+        throw new Error(`Unbound procedure: ${symbolName}`)
+      }
+
+      switch (procedure.kind) {
+        case ProcedureKind.Native:
+          this.callNativeProcedure(symbolName, procedure.value)
+
+          break
+        case ProcedureKind.Virtual:
+          this.callVirtualProcedure(symbolName, procedure.value)
+
+          break
+      }
+    }
+  }
+
   public addNativeProcedure(name: string, bodySource: string) {
     const parser = new Parser(bodySource)
 
@@ -96,6 +142,8 @@ export class Context {
 
   private setupBuiltins() {
     this.addVirtualProcedure("print", procedurePrint)
+    this.addVirtualProcedure("drop", procedureDrop)
+    this.addVirtualProcedure("match", procedureMatch)
   }
 
   private callNativeProcedure(name: string, procedureBody: Object) {
@@ -137,52 +185,6 @@ export class Context {
       default: // Unreachable
     }
   }
-
-  private evalTuple(tuple: Array<Object>) {
-    if (tuple.length > this.stack.length) {
-      throw new Error("Out of stack while capturing local variable")
-    }
-
-    for (const object of tuple.toReversed()) {
-      if (object.kind !== ObjectKind.Symbol) {
-        throw new Error("Only objects of type Symbol can be captured")
-      }
-
-      const symbolName = object.value[0]!
-      const stackObject = this.stack.pop()!
-
-      this.currentFrame.set(symbolName, stackObject)
-    }
-  }
-
-  private evalSymbol(symbolName: string) {
-    if (symbolName.startsWith("$")) {
-      const strippedSymbolName = symbolName.slice(1)
-
-      const variable = this.currentFrame.get(strippedSymbolName)
-      if (!variable) {
-        throw new Error(`Unbound local variable: ${strippedSymbolName}`)
-      }
-
-      this.stack.push(variable)
-    } else {
-      const procedure = this.procedures.get(symbolName)
-      if (!procedure) {
-        throw new Error(`Unbound procedure: ${symbolName}`)
-      }
-
-      switch (procedure.kind) {
-        case ProcedureKind.Native:
-          this.callNativeProcedure(symbolName, procedure.value)
-
-          break
-        case ProcedureKind.Virtual:
-          this.callVirtualProcedure(symbolName, procedure.value)
-
-          break
-      }
-    }
-  }
 }
 
 function procedurePrint(ctx: Context) {
@@ -210,8 +212,89 @@ function procedurePrint(ctx: Context) {
 
   const stackObject = ctx.stack.at(-1)
   if (!stackObject) {
-    throw new Error("Out of stack")
+    throw new Error("Cannot print from empty stack")
   }
 
   printObject(stackObject)
+}
+
+function procedureDrop(ctx: Context) {
+  if (ctx.stack.pop() === undefined) {
+    throw new Error("Cannot drop from empty stack")
+  }
+}
+
+class Match {
+  public readonly selector: Object
+  public readonly branches: Map<any, Object>
+  public readonly defaultBranch:
+    | [pattern: Array<Object>, handler: Object]
+    | undefined
+
+  public constructor(ctx: Context) {
+    this.branches = new Map()
+
+    while (true) {
+      const stackObject = ctx.stack.at(-1)
+      if (!stackObject) {
+        throw new Error("Cannot match due to empty stack")
+      }
+
+      if (stackObject.kind !== ObjectKind.List) {
+        if (this.branches.size === 0 && !this.defaultBranch) {
+          throw new Error("Cannot match due to missing branches")
+        }
+
+        this.selector = stackObject
+
+        break
+      }
+
+      ctx.stack.pop()
+
+      const [pattern, handler] = stackObject.value
+
+      if (!pattern) {
+        throw new Error("Match expression is missing pattern")
+      }
+
+      if (!handler) {
+        throw new Error("Match expression is missing handler")
+      }
+
+      if (pattern.kind === ObjectKind.Tuple) {
+        if (this.defaultBranch !== undefined) {
+          throw new Error(
+            "Match expression can have at most one default branch",
+          )
+        }
+
+        const tuple = pattern.value[0]!
+
+        this.defaultBranch = [tuple, handler]
+      } else {
+        this.branches.set(pattern.value, handler)
+      }
+    }
+  }
+}
+
+function procedureMatch(ctx: Context) {
+  const match = new Match(ctx)
+
+  const branch = match.branches.get(match.selector.value)
+  if (branch) {
+    ctx.evalObject(branch)
+
+    return
+  }
+
+  if (!match.defaultBranch) {
+    return
+  }
+
+  const [captureTuple, handler] = match.defaultBranch
+
+  ctx.evalTuple(captureTuple)
+  ctx.evalObject(handler)
 }
