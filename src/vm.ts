@@ -1,5 +1,7 @@
 import { Parser } from "./parser.ts"
 
+import procedureMatch from "./vm/match.ts"
+
 export enum ObjectKind {
   Integer,
   List,
@@ -32,7 +34,7 @@ export class Context {
   public stack: Array<Object>
   private procedures: Map<string, Procedure>
   private currentFrame: Map<string, Object>
-  private currentProcedureName: string | undefined
+  public currentProcedureName: string | undefined
 
   public constructor() {
     this.stack = []
@@ -85,7 +87,7 @@ export class Context {
 
     for (const object of tuple.toReversed()) {
       if (object.kind !== ObjectKind.Symbol) {
-        throw new Error("Only objects of type Symbol can be captured")
+        throw new Error("Only objects of type Symbol can be used for capture")
       }
 
       const symbolName = object.value[0]!
@@ -127,23 +129,34 @@ export class Context {
   public addNativeProcedure(name: string, bodySource: string) {
     const parser = new Parser(bodySource)
 
+    this.addNativeProcedureObject(name, parser.parseObject())
+  }
+
+  public addNativeProcedureObject(name: string, bodyObject: Object) {
     this.procedures.set(name, {
       kind: ProcedureKind.Native,
-      value: parser.parseObject(),
+      value: bodyObject,
     })
   }
 
-  public addVirtualProcedure(name: string, proc: VirtualProcedure) {
+  public addVirtualProcedure(name: string, procedure: VirtualProcedure) {
     this.procedures.set(name, {
       kind: ProcedureKind.Virtual,
-      value: proc,
+      value: procedure,
     })
   }
 
   private setupBuiltins() {
     this.addVirtualProcedure("print", procedurePrint)
     this.addVirtualProcedure("drop", procedureDrop)
+    this.addVirtualProcedure("swap", procedureSwap)
     this.addVirtualProcedure("match", procedureMatch)
+    this.addVirtualProcedure("proc", procedureProc)
+    this.addVirtualProcedure("eval", procedureEval)
+    this.addVirtualProcedure("+", procedureArithmetic)
+    this.addVirtualProcedure("-", procedureArithmetic)
+    this.addVirtualProcedure("*", procedureArithmetic)
+    this.addVirtualProcedure("/", procedureArithmetic)
   }
 
   private callNativeProcedure(name: string, procedureBody: Object) {
@@ -224,88 +237,91 @@ function procedureDrop(ctx: Context) {
   }
 }
 
-type MatchedBranch = [captureTuple: Array<Object> | undefined, handler: Object]
+function procedureSwap(ctx: Context) {
+  const a = ctx.stack.pop()
+  const b = ctx.stack.pop()
 
-class Match {
-  private readonly selector: Object
-  private readonly branches: Map<any, Object>
-  private readonly defaultBranch:
-    | [captureTuple: Array<Object>, handler: Object]
-    | undefined
-
-  public constructor(ctx: Context) {
-    this.branches = new Map()
-
-    while (true) {
-      const stackObject = ctx.stack.at(-1)
-      if (!stackObject) {
-        throw new Error("Cannot match due to empty stack")
-      }
-
-      // NOTE: Lists are not allowed to be used as selectors. Bug or feature? Hmmm...
-      if (stackObject.kind !== ObjectKind.List) {
-        if (this.branches.size === 0 && !this.defaultBranch) {
-          throw new Error("Cannot match due to missing branches")
-        }
-
-        this.selector = stackObject
-
-        break
-      }
-
-      ctx.stack.pop()
-
-      const [pattern, handler] = stackObject.value
-
-      if (!pattern) {
-        throw new Error("Match expression is missing pattern")
-      }
-
-      if (!handler) {
-        throw new Error("Match expression is missing handler")
-      }
-
-      if (pattern.kind === ObjectKind.Tuple) {
-        if (this.defaultBranch !== undefined) {
-          throw new Error(
-            "Match expression can have at most one default branch",
-          )
-        }
-
-        const tuple = pattern.value[0]!
-
-        this.defaultBranch = [tuple, handler]
-      } else {
-        this.branches.set(pattern.value, handler)
-      }
-    }
+  if (!a || !b) {
+    throw new Error("Cannot swap due to empty stack")
   }
 
-  public matchedBranch(): MatchedBranch | undefined {
-    const handler = this.branches.get(this.selector.value)
-    if (handler) {
-      return [undefined, handler]
-    }
-
-    if (this.defaultBranch) {
-      return this.defaultBranch
-    }
-  }
+  ctx.stack.push(a)
+  ctx.stack.push(b)
 }
 
-function procedureMatch(ctx: Context) {
-  const match = new Match(ctx)
-
-  const matchedBranch = match.matchedBranch()
-  if (!matchedBranch) {
-    return
+function procedureProc(ctx: Context) {
+  const procedureName = ctx.stack.pop()
+  if (!procedureName) {
+    throw new Error("Cannot obtain a procedure name due to empty stack")
   }
 
-  const [captureTuple, handler] = matchedBranch
-
-  if (captureTuple) {
-    ctx.evalTuple(captureTuple)
+  if (procedureName.kind !== ObjectKind.Symbol) {
+    throw new Error("Only Symbols are allowed to be used as a procedure name")
   }
 
-  ctx.evalObject(handler)
+  const procedureBody = ctx.stack.pop()
+  if (!procedureBody) {
+    throw new Error("Cannot obtain a procedure body due to empty stack")
+  }
+
+  if (procedureBody.kind !== ObjectKind.List) {
+    throw new Error("Only Lists are allowed to be used a procedure body")
+  }
+
+  const name = procedureName.value[0]!
+
+  ctx.addNativeProcedureObject(name, procedureBody)
+}
+
+function procedureEval(ctx: Context) {
+  const stackObject = ctx.stack.at(-1)
+  if (!stackObject) {
+    throw new Error("Cannot eval due to empty stack")
+  }
+
+  if (stackObject.kind !== ObjectKind.List) {
+    throw new Error(
+      "Only Lists are allowed to be evaluated using eval procedure",
+    )
+  }
+
+  ctx.evalObject(stackObject)
+}
+
+function procedureArithmetic(ctx: Context) {
+  const b = ctx.stack.at(-1)
+  const a = ctx.stack.at(-2)
+
+  if (!a || !b) {
+    throw new Error(
+      `Cannot perform '${ctx.currentProcedureName}' operation due to empty stack`,
+    )
+  }
+
+  if (a.kind !== ObjectKind.Integer || b.kind !== ObjectKind.Integer) {
+    throw new Error(
+      `Only Integers are allowed to perform ${ctx.currentProcedureName} operation`,
+    )
+  }
+
+  let result: number
+
+  switch (ctx.currentProcedureName) {
+    case "+":
+      result = a.value + b.value
+      break
+    case "-":
+      result = a.value - b.value
+      break
+    case "*":
+      result = a.value * b.value
+      break
+    case "/":
+      result = Math.round(a.value / b.value)
+      break
+    default:
+      throw new Error("Unreachable")
+  }
+
+  ctx.stack.push({ kind: ObjectKind.Integer, value: result })
 }
