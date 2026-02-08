@@ -12,5 +12,5 @@
   match
 ] 'fibonacci proc
 
-0 fibonacci println drop
+30 fibonacci println drop
 
