@@ -1,3 +1,4 @@
+import { Unreachable } from "./error.ts"
 import { Parser } from "./parser.ts"
 
 import procedureMatch from "./vm/match.ts"
@@ -195,7 +196,8 @@ export class Context {
         })
 
         break
-      default: // Unreachable
+      default:
+        throw new Unreachable()
     }
   }
 }
@@ -289,8 +291,8 @@ function procedureEval(ctx: Context) {
 }
 
 function procedureArithmetic(ctx: Context) {
-  const b = ctx.stack.at(-1)
-  const a = ctx.stack.at(-2)
+  const b = ctx.stack.pop()
+  const a = ctx.stack.pop()
 
   if (!a || !b) {
     throw new Error(
@@ -320,7 +322,7 @@ function procedureArithmetic(ctx: Context) {
       result = Math.round(a.value / b.value)
       break
     default:
-      throw new Error("Unreachable")
+      throw new Unreachable()
   }
 
   ctx.stack.push({ kind: ObjectKind.Integer, value: result })

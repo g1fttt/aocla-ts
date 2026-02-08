@@ -1,3 +1,4 @@
+import { Unreachable } from "./error.ts"
 import { ObjectKind } from "./vm.ts"
 import type { Object } from "./vm.ts"
 
@@ -150,7 +151,8 @@ export class Parser {
       case "[":
         rightBracket = "]"
         break
-      default: // Unreachable
+      default:
+        throw new Unreachable()
     }
 
     let innerObjects: Array<Object> = []

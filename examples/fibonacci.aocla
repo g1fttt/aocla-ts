@@ -1,13 +1,12 @@
 [print "\n" print drop] 'println proc
-[swap drop swap drop] 'swop2 proc
 
 [
     [0 []]
     [1 []]
     [(n) [
-      @n 1 - swop2 fibonacci
-      @n 2 - swop2 fibonacci
-      + swop2
+      @n 1 - fibonacci
+      @n 2 - fibonacci
+      +
     ]]
   match
 ] 'fibonacci proc
