@@ -1,0 +1,13 @@
+["\n" print drop] 'new-line proc
+
+1 2 3 rot swap
+print drop
+print drop
+print drop
+new-line
+
+1 dup dup
+print drop
+print drop
+print drop
+new-line

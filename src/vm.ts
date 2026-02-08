@@ -151,6 +151,8 @@ export class Context {
     this.addVirtualProcedure("print", procedurePrint)
     this.addVirtualProcedure("drop", procedureDrop)
     this.addVirtualProcedure("swap", procedureSwap)
+    this.addVirtualProcedure("rot", procedureRot)
+    this.addVirtualProcedure("dup", procedureDup)
     this.addVirtualProcedure("match", procedureMatch)
     this.addVirtualProcedure("proc", procedureProc)
     this.addVirtualProcedure("eval", procedureEval)
@@ -158,6 +160,14 @@ export class Context {
     this.addVirtualProcedure("-", procedureArithmetic)
     this.addVirtualProcedure("*", procedureArithmetic)
     this.addVirtualProcedure("/", procedureArithmetic)
+    this.addVirtualProcedure("and", procedureLogical)
+    this.addVirtualProcedure("or", procedureLogical)
+    this.addVirtualProcedure("=", procedureComparison)
+    this.addVirtualProcedure("<>", procedureComparison)
+    this.addVirtualProcedure("<=", procedureComparison)
+    this.addVirtualProcedure(">=", procedureComparison)
+    this.addVirtualProcedure("<", procedureComparison)
+    this.addVirtualProcedure(">", procedureComparison)
   }
 
   private callNativeProcedure(name: string, procedureBody: Object) {
@@ -244,11 +254,29 @@ function procedureSwap(ctx: Context) {
   const b = ctx.stack.pop()
 
   if (!a || !b) {
-    throw new Error("Cannot swap due to empty stack")
+    throw new Error("Not enough values on stack to perform swap operation")
   }
 
   ctx.stack.push(a)
   ctx.stack.push(b)
+}
+
+function procedureRot(ctx: Context) {
+  const stackObject = ctx.stack.splice(-3, 1)[0]
+  if (!stackObject) {
+    throw new Error("Not enough values on stack to perform rot operation")
+  }
+
+  ctx.stack.push(stackObject)
+}
+
+function procedureDup(ctx: Context) {
+  const stackObject = ctx.stack.at(-1)
+  if (!stackObject) {
+    throw new Error("Not enough values on stack perform dup operation")
+  }
+
+  ctx.stack.push(stackObject)
 }
 
 function procedureProc(ctx: Context) {
@@ -290,7 +318,14 @@ function procedureEval(ctx: Context) {
   ctx.evalObject(stackObject)
 }
 
-function procedureArithmetic(ctx: Context) {
+type BinaryOpKindConstraint = (a: ObjectKind, b: ObjectKind) => boolean
+type BinaryOp = (a: any, b: any) => void
+
+function performBinaryOp(
+  ctx: Context,
+  kindConstraint: ObjectKind | BinaryOpKindConstraint,
+  op: BinaryOp,
+) {
   const b = ctx.stack.pop()
   const a = ctx.stack.pop()
 
@@ -300,30 +335,119 @@ function procedureArithmetic(ctx: Context) {
     )
   }
 
-  if (a.kind !== ObjectKind.Integer || b.kind !== ObjectKind.Integer) {
-    throw new Error(
-      `Only Integers are allowed to perform ${ctx.currentProcedureName} operation`,
+  if (typeof kindConstraint === "function") {
+    if (!kindConstraint(a.kind, b.kind)) {
+      const aKindStr = ObjectKind[a.kind]
+      const bKindStr = ObjectKind[b.kind]
+
+      throw new Error(
+        `${aKindStr} and ${bKindStr} is a disallowed combination to perform ${ctx.currentProcedureName} operation`,
+      )
+    }
+  } else {
+    if (a.kind !== kindConstraint || b.kind !== kindConstraint) {
+      throw new Error(
+        `Only ${kindConstraint}s are allowed to perform ${ctx.currentProcedureName} operation`,
+      )
+    }
+  }
+
+  op(a.value, b.value)
+}
+
+function procedureComparison(ctx: Context) {
+  const kindConstraint = (a: ObjectKind, b: ObjectKind) => {
+    const forbiddenKinds = [ObjectKind.List, ObjectKind.Tuple]
+    const hasForbiddenKinds =
+      forbiddenKinds.includes(a) || forbiddenKinds.includes(b)
+
+    if (hasForbiddenKinds) {
+      return false
+    }
+
+    const hasLessOrGreater = [">=", "<=", ">", "<"].some(
+      (op) => ctx.currentProcedureName === op,
     )
+    const tryingToCompareNonInteger =
+      a !== ObjectKind.Integer || b !== ObjectKind.Integer
+
+    if (hasLessOrGreater && tryingToCompareNonInteger) {
+      return false
+    }
+
+    return true
   }
 
-  let result: number
+  performBinaryOp(ctx, kindConstraint, (a, b) => {
+    let result: boolean
 
-  switch (ctx.currentProcedureName) {
-    case "+":
-      result = a.value + b.value
-      break
-    case "-":
-      result = a.value - b.value
-      break
-    case "*":
-      result = a.value * b.value
-      break
-    case "/":
-      result = Math.round(a.value / b.value)
-      break
-    default:
-      throw new Unreachable()
-  }
+    switch (ctx.currentProcedureName) {
+      case "=":
+        result = a === b
+        break
+      case "<>":
+        result = a !== b
+        break
+      case ">=":
+        result = a >= b
+        break
+      case "<=":
+        result = a <= b
+        break
+      case "<":
+        result = a < b
+        break
+      case ">":
+        result = a > b
+        break
+      default:
+        throw new Unreachable()
+    }
 
-  ctx.stack.push({ kind: ObjectKind.Integer, value: result })
+    ctx.stack.push({ kind: ObjectKind.Boolean, value: result })
+  })
+}
+
+function procedureLogical(ctx: Context) {
+  performBinaryOp(ctx, ObjectKind.Boolean, (a: boolean, b: boolean) => {
+    let result: boolean
+
+    switch (ctx.currentProcedureName) {
+      case "and":
+        result = a && b
+        break
+      case "or":
+        result = a || b
+        break
+      default:
+        throw new Unreachable()
+    }
+
+    ctx.stack.push({ kind: ObjectKind.Boolean, value: result })
+  })
+}
+
+function procedureArithmetic(ctx: Context) {
+  performBinaryOp(ctx, ObjectKind.Integer, (a: number, b: number) => {
+    let result: number
+
+    switch (ctx.currentProcedureName) {
+      case "+":
+        result = a + b
+        break
+      case "-":
+        result = a - b
+        break
+      case "*":
+        result = a * b
+        break
+      case "/":
+        result = Math.round(a / b)
+        break
+      default:
+        throw new Unreachable()
+    }
+
+    ctx.stack.push({ kind: ObjectKind.Integer, value: result })
+  })
 }

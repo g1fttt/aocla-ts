@@ -1,0 +1,13 @@
+[(cond if else)
+  @cond
+    [#t [@if eval]]
+    [#f [@else eval]]
+  match
+] 'ifelse proc
+
+#t
+  ["True\n" print]
+  ["False\n" print]
+ifelse
+
+drop

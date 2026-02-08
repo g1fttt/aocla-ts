@@ -3,5 +3,7 @@
 @n
   [0 ["zero\n" print]]
   [1 ["one\n" print]]
-  [(x) [@x print "\n" print]]
+  [(x) [@x print "\n" print drop]]
 match
+
+drop
