@@ -1,4 +1,3 @@
-import { Unreachable } from "./error.ts"
 import { ObjectKind } from "./vm.ts"
 import type { Object } from "./vm.ts"
 
@@ -9,35 +8,14 @@ export class Parser {
   private line: number
 
   public constructor(source: string) {
-    this.source = "[" + source + "]"
+    this.source = source
     this.globalIndex = 0
     this.relativeIndex = 0
-    this.line = 0
+    this.line = 1
   }
 
   public parseObject(): Object {
-    this.skipWhitespace()
-
-    const currentChar = this.currentChar()
-    if (!currentChar || this.globalIndex >= this.source.length) {
-      throw this.error("Out of bound")
-    }
-
-    if (Parser.isSymbol(currentChar)) {
-      return this.parseSymbol({ isQuoted: false })
-    } else if (Parser.isNumeric(currentChar)) {
-      return this.parseInteger()
-    } else if (currentChar === "(" || currentChar === "[") {
-      return this.parseSequence({ isQuoted: false })
-    } else if (currentChar === "#") {
-      return this.parseBoolean()
-    } else if (currentChar === '"') {
-      return this.parseString()
-    } else if (currentChar === "'") {
-      return this.parseQuoted()
-    } else {
-      throw this.error(`Invalid symbol: ${currentChar}`)
-    }
+    return this.parseList({ isRoot: true })
   }
 
   private parseQuoted(): Object {
@@ -49,7 +27,7 @@ export class Parser {
     if (Parser.isSymbol(nextChar)) {
       return this.parseSymbol({ isQuoted: true })
     } else if (nextChar === "(") {
-      return this.parseSequence({ isQuoted: true })
+      return this.parseTuple({ isQuoted: true })
     } else {
       throw this.error("Only Symbol and Tuple are allowed to be quoted")
     }
@@ -79,6 +57,11 @@ export class Parser {
   private parseInteger(): Object {
     const startIndex = this.globalIndex
 
+    // Infinite loop prevention
+    if (this.currentChar() === "-") {
+      this.skipChar()
+    }
+
     while (true) {
       const currentChar = this.currentChar()
       if (!currentChar) {
@@ -100,7 +83,7 @@ export class Parser {
   private parseBoolean(): Object {
     const state = this.nextCharAdvance()
     if (state !== "t" && state !== "f") {
-      throw this.error("Booleans are either #t or #f")
+      throw this.error("Booleans can be either #t or #f")
     }
 
     this.skipChar()
@@ -139,48 +122,108 @@ export class Parser {
     return { kind: ObjectKind.String, value: unescapedString }
   }
 
-  private parseSequence(args: { isQuoted: boolean }): Object {
-    const leftBracket = this.currentCharAdvance()
-
-    let rightBracket: string | undefined
-
-    switch (leftBracket) {
-      case "(":
-        rightBracket = ")"
-        break
-      case "[":
-        rightBracket = "]"
-        break
-      default:
-        throw new Unreachable()
+  public parseList(args: { isRoot: boolean } = { isRoot: false }): Object {
+    if (!args.isRoot) {
+      this.skipChar()
     }
 
-    let innerObjects: Array<Object> = []
+    let objects = new Array<Object>()
 
     while (true) {
-      this.skipWhitespace()
-
       const currentChar = this.currentChar()
       if (!currentChar) {
-        throw this.error("Sequence was never closed")
+        if (args.isRoot) break
+        else throw this.error("List was never closed")
       }
 
-      if (currentChar === rightBracket) {
+      if (currentChar === "]" && !args.isRoot) {
         this.skipChar()
 
-        switch (rightBracket) {
-          case "]":
-            return { kind: ObjectKind.List, value: innerObjects }
-          case ")":
-            return {
-              kind: ObjectKind.Tuple,
-              value: [innerObjects, args.isQuoted],
-            }
+        break
+      }
+
+      let object: Object
+
+      if (Parser.isInteger(currentChar, this.nextChar())) {
+        object = this.parseInteger()
+      } else if (Parser.isSymbol(currentChar)) {
+        object = this.parseSymbol({ isQuoted: false })
+      } else if (Parser.isWhitespace(currentChar)) {
+        this.skipWhitespace()
+
+        continue
+      } else {
+        switch (currentChar) {
+          case "[":
+            object = this.parseList()
+            break
+          case "(":
+            object = this.parseTuple({ isQuoted: false })
+            break
+          case "#":
+            object = this.parseBoolean()
+            break
+          case '"':
+            object = this.parseString()
+            break
+          case "'":
+            object = this.parseQuoted()
+            break
+          default:
+            throw this.error(`Invalid symbol: ${currentChar}`)
         }
       }
 
-      innerObjects.push(this.parseObject())
+      objects.push(object)
     }
+
+    return { kind: ObjectKind.List, value: objects }
+  }
+
+  private parseTuple(args: { isQuoted: boolean }): Object {
+    this.skipChar()
+
+    let objects = new Array<Object>()
+
+    while (true) {
+      const currentChar = this.currentChar()
+      if (!currentChar) {
+        throw this.error("Tuple was never closed")
+      }
+
+      if (Parser.isWhitespace(currentChar)) {
+        this.skipWhitespace()
+
+        continue
+      } else if (Parser.isSymbol(currentChar)) {
+        objects.push(this.parseSymbol({ isQuoted: false }))
+      } else if (currentChar === ")") {
+        this.skipChar()
+
+        break
+      }
+    }
+
+    return { kind: ObjectKind.Tuple, value: [objects, args.isQuoted] }
+  }
+
+  private currentChar(): string | undefined {
+    return this.source[this.globalIndex]
+  }
+
+  private nextChar(): string | undefined {
+    return this.source[this.globalIndex + 1]
+  }
+
+  private nextCharAdvance(): string | undefined {
+    this.skipChar()
+
+    return this.source[this.globalIndex]
+  }
+
+  private skipChar() {
+    ++this.globalIndex
+    ++this.relativeIndex
   }
 
   private skipWhitespace() {
@@ -194,8 +237,10 @@ export class Parser {
         case " ":
           break
         case "\n":
-          ++this.line
-          this.relativeIndex = 0
+          if (this.globalIndex < this.source.length - 1) {
+            ++this.line
+            this.relativeIndex = 0
+          }
 
           break
         default:
@@ -206,25 +251,31 @@ export class Parser {
     }
   }
 
-  private currentChar(): string | undefined {
-    return this.source[this.globalIndex]
-  }
-
-  private currentCharAdvance(): string | undefined {
-    return this.source[this.globalIndex++]
-  }
-
-  private nextCharAdvance(): string | undefined {
-    return this.source[++this.globalIndex]
-  }
-
-  private skipChar() {
-    ++this.globalIndex
-    ++this.relativeIndex
-  }
-
   private error(message: string): ParserError {
-    return new ParserError(message, this.line + 1, this.relativeIndex + 1)
+    return new ParserError(message, this.line, this.relativeIndex)
+  }
+
+  private object(kind: ObjectKind, value: any) {}
+
+  private static isInteger(
+    currentChar: string,
+    nextChar: string | undefined,
+  ): boolean {
+    const isNumeric = Parser.isNumeric(currentChar)
+
+    if (!nextChar) {
+      return isNumeric
+    }
+
+    return isNumeric || Parser.isNegativeNumeric(currentChar, nextChar)
+  }
+
+  private static isWhitespace(char: string): boolean {
+    return [" ", "\n"].includes(char)
+  }
+
+  private static isNegativeNumeric(char: string, nextChar: string): boolean {
+    return char === "-" && Parser.isNumeric(nextChar)
   }
 
   private static isNumeric(char: string): boolean {
@@ -261,6 +312,6 @@ export class ParserError extends Error {
   }
 
   public formattedMessage(): string {
-    return `Error occured during parsing phase at ${this.row}:${this.column}. ${this.message}.`
+    return `Error occured during parsing phase at ${this.row}:${this.column}. ${this.message}`
   }
 }

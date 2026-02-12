@@ -22,5 +22,5 @@ try {
     ? err.formattedMessage()
     : String(err)
 
-  console.error(message)
+  console.error(`${message}.`)
 }

@@ -156,6 +156,8 @@ export class Context {
     this.addVirtualProcedure("match", procedureMatch)
     this.addVirtualProcedure("proc", procedureProc)
     this.addVirtualProcedure("eval", procedureEval)
+    this.addVirtualProcedure("panic", procedurePanic)
+    this.addVirtualProcedure("type", procedureType)
     this.addVirtualProcedure("+", procedureArithmetic)
     this.addVirtualProcedure("-", procedureArithmetic)
     this.addVirtualProcedure("*", procedureArithmetic)
@@ -304,7 +306,7 @@ function procedureProc(ctx: Context) {
 }
 
 function procedureEval(ctx: Context) {
-  const stackObject = ctx.stack.at(-1)
+  const stackObject = ctx.stack.pop()
   if (!stackObject) {
     throw new Error("Cannot eval due to empty stack")
   }
@@ -316,6 +318,31 @@ function procedureEval(ctx: Context) {
   }
 
   ctx.evalObject(stackObject)
+}
+
+function procedurePanic(ctx: Context) {
+  const stackObject = ctx.stack.pop()
+  if (!stackObject) {
+    throw new Error("Cannot panic due to empty stack. No message provided")
+  }
+
+  if (stackObject.kind !== ObjectKind.String) {
+    throw new Error("Only Strings are allowed to be used as panic message")
+  }
+
+  throw new Error(`Panic occured. ${stackObject.value}`)
+}
+
+function procedureType(ctx: Context) {
+  const stackObject = ctx.stack.at(-1)
+  if (!stackObject) {
+    throw new Error("Cannot push type due to empty stack")
+  }
+
+  ctx.stack.push({
+    kind: ObjectKind.String,
+    value: ObjectKind[stackObject.kind],
+  })
 }
 
 type BinaryOpKindConstraint = (a: ObjectKind, b: ObjectKind) => boolean
@@ -344,12 +371,12 @@ function performBinaryOp(
         `${aKindStr} and ${bKindStr} is a disallowed combination to perform ${ctx.currentProcedureName} operation`,
       )
     }
-  } else {
-    if (a.kind !== kindConstraint || b.kind !== kindConstraint) {
-      throw new Error(
-        `Only ${kindConstraint}s are allowed to perform ${ctx.currentProcedureName} operation`,
-      )
-    }
+  } else if (a.kind !== kindConstraint || b.kind !== kindConstraint) {
+    const kindStr = ObjectKind[kindConstraint]
+
+    throw new Error(
+      `Only ${kindStr}s are allowed to perform ${ctx.currentProcedureName} operation`,
+    )
   }
 
   op(a.value, b.value)
