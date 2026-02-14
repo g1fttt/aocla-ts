@@ -1,13 +1,18 @@
-import { Context, ObjectKind } from "../vm.ts"
-import type { Object } from "../vm.ts"
+import type { ParserSpan } from "../parser.ts"
+import { Context, ObjectKind, type Object } from "../vm.ts"
 
-type MatchedBranch = [captureTuple: Array<Object> | undefined, handler: Object]
+type DefaultBranchPattern = [captureTuple: Array<Object>, tupleSpan: ParserSpan]
+
+type MatchedBranch = [
+  pattern: DefaultBranchPattern | undefined,
+  handler: Object,
+]
 
 class Match {
   private readonly selector: Object
   private readonly branches: Map<any, Object>
   private readonly defaultBranch:
-    | [captureTuple: Array<Object>, handler: Object]
+    | [pattern: DefaultBranchPattern, handler: Object]
     | undefined
 
   public constructor(ctx: Context) {
@@ -16,13 +21,13 @@ class Match {
     while (true) {
       const stackObject = ctx.stack.at(-1)
       if (!stackObject) {
-        throw new Error("Cannot match due to empty stack")
+        throw ctx.errorProcedureCall("Cannot match due to empty stack")
       }
 
       // NOTE: Lists are not allowed to be used as selectors. Bug or feature? Hmmm...
       if (stackObject.kind !== ObjectKind.List) {
         if (this.branches.size === 0 && !this.defaultBranch) {
-          throw new Error("Cannot match due to missing branches")
+          throw ctx.errorProcedureCall("Cannot match due to missing branches")
         }
 
         this.selector = stackObject
@@ -33,25 +38,31 @@ class Match {
       ctx.stack.pop()
 
       const [pattern, handler] = stackObject.value
+      const branchSpan = stackObject.span
 
       if (!pattern) {
-        throw new Error("Match expression is missing pattern")
+        throw ctx.error("Match expression is missing pattern", branchSpan)
       }
 
       if (!handler) {
-        throw new Error("Match expression is missing handler")
+        throw ctx.error("Match expression is missing handler", branchSpan)
       }
 
       if (pattern.kind === ObjectKind.Tuple) {
         if (this.defaultBranch !== undefined) {
-          throw new Error(
+          throw ctx.error(
             "Match expression can have at most one default branch",
+            pattern.span,
           )
         }
 
-        const tuple = pattern.value[0]!
+        const captureTuple = pattern.value[0]!
+        const defaultBranchPattern: DefaultBranchPattern = [
+          captureTuple,
+          pattern.span,
+        ]
 
-        this.defaultBranch = [tuple, handler]
+        this.defaultBranch = [defaultBranchPattern, handler]
       } else {
         this.branches.set(pattern.value, handler)
       }
@@ -61,6 +72,8 @@ class Match {
   public matchedBranch(): MatchedBranch | undefined {
     const handler = this.branches.get(this.selector.value)
     if (handler) {
+      // We don't need to return any patterns here since we're already matched it before.
+      // Return handler to callee in order to interpret it and get desired result.
       return [undefined, handler]
     }
 
@@ -78,10 +91,12 @@ export default function procedureMatch(ctx: Context) {
     return
   }
 
-  const [captureTuple, handler] = matchedBranch
+  const [pattern, handler] = matchedBranch
 
-  if (captureTuple) {
-    ctx.evalTuple(captureTuple)
+  if (pattern) {
+    const [captureTuple, tupleSpan] = pattern
+
+    ctx.evalTuple(captureTuple, tupleSpan)
   }
 
   ctx.evalObject(handler)

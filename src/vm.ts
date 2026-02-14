@@ -1,5 +1,5 @@
-import { Unreachable } from "./error.ts"
-import { Parser } from "./parser.ts"
+import { PosError, Unreachable } from "./error.ts"
+import { Parser, type ParserSpan } from "./parser.ts"
 
 import procedureMatch from "./vm/match.ts"
 
@@ -12,13 +12,15 @@ export enum ObjectKind {
   Symbol,
 }
 
-export type Object =
+export type ObjectData =
   | { kind: ObjectKind.Integer; value: number }
   | { kind: ObjectKind.List; value: Array<Object> }
   | { kind: ObjectKind.Tuple; value: [Array<Object>, isQuoted: boolean] }
   | { kind: ObjectKind.String; value: string }
   | { kind: ObjectKind.Boolean; value: boolean }
   | { kind: ObjectKind.Symbol; value: [string, isQuoted: boolean] }
+
+export type Object = ObjectData & { span: ParserSpan }
 
 export type VirtualProcedure = (ctx: Context) => void
 
@@ -31,28 +33,38 @@ type Procedure =
   | { kind: ProcedureKind.Native; value: Object }
   | { kind: ProcedureKind.Virtual; value: VirtualProcedure }
 
+type ProcedureInfo = {
+  name: string
+  // Used for error logging during procedure call
+  callKeywordSpan: ParserSpan
+}
+
 export class Context {
   public stack: Array<Object>
+  public currentProcedureInfo: ProcedureInfo | undefined
   private procedures: Map<string, Procedure>
-  private currentFrame: Map<string, Object>
-  public currentProcedureName: string | undefined
+  private currentScope: Map<string, Object>
 
   public constructor() {
     this.stack = []
     this.procedures = new Map()
-    this.currentFrame = new Map()
+    this.currentScope = new Map()
     this.setupBuiltins()
   }
 
   public eval(source: string) {
     const parser = new Parser(source)
 
-    this.evalObject(parser.parseObject())
+    const object = parser.parseObject()
+
+    // console.log(JSON.stringify(object, null, 2))
+
+    this.evalObject(object)
   }
 
   public evalObject(rootObject: Object) {
     if (rootObject.kind !== ObjectKind.List) {
-      throw new Error("Root object must be of type List")
+      throw this.error("Root object must be of type List", rootObject.span)
     }
 
     for (const object of rootObject.value) {
@@ -61,7 +73,7 @@ export class Context {
           const [tuple, isQuoted] = object.value
 
           if (isQuoted) this.dequoteAndPushToStack(object)
-          else this.evalTuple(tuple)
+          else this.evalTuple(tuple, object.span)
 
           break
         }
@@ -69,7 +81,7 @@ export class Context {
           const [symbolName, isQuoted] = object.value
 
           if (isQuoted) this.dequoteAndPushToStack(object)
-          else this.evalSymbol(symbolName)
+          else this.evalSymbol(symbolName, object.span)
 
           break
         }
@@ -81,56 +93,58 @@ export class Context {
     }
   }
 
-  public evalTuple(tuple: Array<Object>) {
+  public evalTuple(tuple: Array<Object>, tupleSpan: ParserSpan) {
     if (tuple.length > this.stack.length) {
-      throw new Error("Out of stack while capturing local variable")
+      throw this.error("Out of stack while capturing local variable", tupleSpan)
     }
 
     for (const object of tuple.toReversed()) {
       if (object.kind !== ObjectKind.Symbol) {
-        throw new Error("Only objects of type Symbol can be used for capture")
+        throw this.error(
+          "Only objects of type Symbol can be used for capture",
+          object.span,
+        )
       }
 
       const symbolName = object.value[0]!
       const stackObject = this.stack.pop()!
 
-      this.currentFrame.set(symbolName, stackObject)
+      this.currentScope.set(symbolName, stackObject)
     }
   }
 
-  public evalSymbol(symbolName: string) {
+  public evalSymbol(symbolName: string, symbolSpan: ParserSpan) {
     if (symbolName.startsWith("@")) {
       const strippedSymbolName = symbolName.slice(1)
 
-      const variable = this.currentFrame.get(strippedSymbolName)
+      const variable = this.currentScope.get(strippedSymbolName)
       if (!variable) {
-        throw new Error(`Unbound local variable: ${strippedSymbolName}`)
+        throw this.error(
+          `Unbound local variable: ${strippedSymbolName}`,
+          symbolSpan,
+        )
       }
 
       this.stack.push(variable)
     } else {
       const procedure = this.procedures.get(symbolName)
       if (!procedure) {
-        throw new Error(`Unbound procedure: ${symbolName}`)
+        throw this.error(`Unbound procedure: ${symbolName}`, symbolSpan)
       }
+
+      const procedureInfo = { name: symbolName, callKeywordSpan: symbolSpan }
 
       switch (procedure.kind) {
         case ProcedureKind.Native:
-          this.callNativeProcedure(symbolName, procedure.value)
+          this.callNativeProcedure(procedureInfo, procedure.value)
 
           break
         case ProcedureKind.Virtual:
-          this.callVirtualProcedure(symbolName, procedure.value)
+          this.callVirtualProcedure(procedureInfo, procedure.value)
 
           break
       }
     }
-  }
-
-  public addNativeProcedure(name: string, bodySource: string) {
-    const parser = new Parser(bodySource)
-
-    this.addNativeProcedureObject(name, parser.parseObject())
   }
 
   public addNativeProcedureObject(name: string, bodyObject: Object) {
@@ -145,6 +159,22 @@ export class Context {
       kind: ProcedureKind.Virtual,
       value: procedure,
     })
+  }
+
+  public currentProcedureName(): string | undefined {
+    return this.currentProcedureInfo?.name
+  }
+
+  public callKeywordSpan(): ParserSpan | undefined {
+    return this.currentProcedureInfo?.callKeywordSpan
+  }
+
+  public error(message: string, span: ParserSpan): VmError {
+    return new VmError(message, span)
+  }
+
+  public errorProcedureCall(message: string): VmError {
+    return this.error(message, this.callKeywordSpan()!)
   }
 
   private setupBuiltins() {
@@ -172,21 +202,21 @@ export class Context {
     this.addVirtualProcedure(">", procedureComparison)
   }
 
-  private callNativeProcedure(name: string, procedureBody: Object) {
-    const frameTemp = structuredClone(this.currentFrame)
+  private callNativeProcedure(info: ProcedureInfo, procBody: Object) {
+    const scopeTemp = structuredClone(this.currentScope)
 
-    this.callVirtualProcedure(name, (ctx) => ctx.evalObject(procedureBody))
-    this.currentFrame = frameTemp
+    this.callVirtualProcedure(info, (ctx) => ctx.evalObject(procBody))
+    this.currentScope = scopeTemp
   }
 
-  private callVirtualProcedure(name: string, procedure: VirtualProcedure) {
-    const procedureNameTemp = this.currentProcedureName
+  private callVirtualProcedure(info: ProcedureInfo, proc: VirtualProcedure) {
+    const procedureInfoTemp = structuredClone(this.currentProcedureInfo)
 
-    this.currentProcedureName = name
+    this.currentProcedureInfo = info
     {
-      procedure(this)
+      proc(this)
     }
-    this.currentProcedureName = procedureNameTemp
+    this.currentProcedureInfo = procedureInfoTemp
   }
 
   private dequoteAndPushToStack(object: Object) {
@@ -196,21 +226,28 @@ export class Context {
       case ObjectKind.Tuple:
         const tuple = object.value[0]!
 
-        this.stack.push({ kind: ObjectKind.Tuple, value: [tuple, isQuoted] })
+        this.stack.push({ ...object, value: [tuple, isQuoted] })
 
         break
       case ObjectKind.Symbol:
         const name = object.value[0]!
 
-        this.stack.push({
-          kind: ObjectKind.Symbol,
-          value: [name, isQuoted],
-        })
+        this.stack.push({ ...object, value: [name, isQuoted] })
 
         break
       default:
         throw new Unreachable()
     }
+  }
+}
+
+export class VmError extends PosError {
+  public constructor(message: string, span: ParserSpan) {
+    super(message, span, true /* shouldIncrement */)
+  }
+
+  public override formattedMessage(): string {
+    return `Error occured during evaluating phase at ${this.position()}. ${this.message}`
   }
 }
 
@@ -239,7 +276,7 @@ function procedurePrint(ctx: Context) {
 
   const stackObject = ctx.stack.at(-1)
   if (!stackObject) {
-    throw new Error("Cannot print from empty stack")
+    throw ctx.errorProcedureCall("Cannot print from empty stack")
   }
 
   printObject(stackObject)
@@ -247,7 +284,7 @@ function procedurePrint(ctx: Context) {
 
 function procedureDrop(ctx: Context) {
   if (ctx.stack.pop() === undefined) {
-    throw new Error("Cannot drop from empty stack")
+    throw ctx.errorProcedureCall("Cannot drop from empty stack")
   }
 }
 
@@ -256,7 +293,9 @@ function procedureSwap(ctx: Context) {
   const b = ctx.stack.pop()
 
   if (!a || !b) {
-    throw new Error("Not enough values on stack to perform swap operation")
+    throw ctx.errorProcedureCall(
+      "Not enough values on stack to perform swap operation",
+    )
   }
 
   ctx.stack.push(a)
@@ -264,9 +303,11 @@ function procedureSwap(ctx: Context) {
 }
 
 function procedureRot(ctx: Context) {
-  const stackObject = ctx.stack.splice(-3, 1)[0]
+  const stackObject = ctx.stack.at(-3)
   if (!stackObject) {
-    throw new Error("Not enough values on stack to perform rot operation")
+    throw ctx.errorProcedureCall(
+      "Not enough values on stack to perform rot operation",
+    )
   }
 
   ctx.stack.push(stackObject)
@@ -275,7 +316,9 @@ function procedureRot(ctx: Context) {
 function procedureDup(ctx: Context) {
   const stackObject = ctx.stack.at(-1)
   if (!stackObject) {
-    throw new Error("Not enough values on stack perform dup operation")
+    throw ctx.errorProcedureCall(
+      "Not enough values on stack perform dup operation",
+    )
   }
 
   ctx.stack.push(stackObject)
@@ -284,20 +327,30 @@ function procedureDup(ctx: Context) {
 function procedureProc(ctx: Context) {
   const procedureName = ctx.stack.pop()
   if (!procedureName) {
-    throw new Error("Cannot obtain a procedure name due to empty stack")
+    throw ctx.errorProcedureCall(
+      "Cannot obtain a procedure name due to empty stack",
+    )
   }
 
   if (procedureName.kind !== ObjectKind.Symbol) {
-    throw new Error("Only Symbols are allowed to be used as a procedure name")
+    throw ctx.error(
+      "Only Symbols are allowed to be used as a procedure name",
+      procedureName.span,
+    )
   }
 
   const procedureBody = ctx.stack.pop()
   if (!procedureBody) {
-    throw new Error("Cannot obtain a procedure body due to empty stack")
+    throw ctx.errorProcedureCall(
+      "Cannot obtain a procedure body due to empty stack",
+    )
   }
 
   if (procedureBody.kind !== ObjectKind.List) {
-    throw new Error("Only Lists are allowed to be used a procedure body")
+    throw ctx.error(
+      "Only Lists are allowed to be used a procedure body",
+      procedureBody.span,
+    )
   }
 
   const name = procedureName.value[0]!
@@ -308,12 +361,13 @@ function procedureProc(ctx: Context) {
 function procedureEval(ctx: Context) {
   const stackObject = ctx.stack.pop()
   if (!stackObject) {
-    throw new Error("Cannot eval due to empty stack")
+    throw ctx.errorProcedureCall("Cannot eval due to empty stack")
   }
 
   if (stackObject.kind !== ObjectKind.List) {
-    throw new Error(
+    throw ctx.error(
       "Only Lists are allowed to be evaluated using eval procedure",
+      stackObject.span,
     )
   }
 
@@ -323,23 +377,29 @@ function procedureEval(ctx: Context) {
 function procedurePanic(ctx: Context) {
   const stackObject = ctx.stack.pop()
   if (!stackObject) {
-    throw new Error("Cannot panic due to empty stack. No message provided")
+    throw ctx.errorProcedureCall(
+      "Cannot panic due to empty stack. No message provided",
+    )
   }
 
   if (stackObject.kind !== ObjectKind.String) {
-    throw new Error("Only Strings are allowed to be used as panic message")
+    throw ctx.error(
+      "Only Strings are allowed to be used as panic message",
+      stackObject.span,
+    )
   }
 
-  throw new Error(`Panic occured. ${stackObject.value}`)
+  throw ctx.errorProcedureCall(`Panic occured. ${stackObject.value}`)
 }
 
 function procedureType(ctx: Context) {
   const stackObject = ctx.stack.at(-1)
   if (!stackObject) {
-    throw new Error("Cannot push type due to empty stack")
+    throw ctx.errorProcedureCall("Cannot push type due to empty stack")
   }
 
   ctx.stack.push({
+    ...stackObject,
     kind: ObjectKind.String,
     value: ObjectKind[stackObject.kind],
   })
@@ -353,12 +413,14 @@ function performBinaryOp(
   kindConstraint: ObjectKind | BinaryOpKindConstraint,
   op: BinaryOp,
 ) {
+  const procName = ctx.currentProcedureName()
+
   const b = ctx.stack.pop()
   const a = ctx.stack.pop()
 
   if (!a || !b) {
-    throw new Error(
-      `Cannot perform '${ctx.currentProcedureName}' operation due to empty stack`,
+    throw ctx.errorProcedureCall(
+      `Cannot perform '${procName}' operation due to empty stack`,
     )
   }
 
@@ -367,15 +429,15 @@ function performBinaryOp(
       const aKindStr = ObjectKind[a.kind]
       const bKindStr = ObjectKind[b.kind]
 
-      throw new Error(
-        `${aKindStr} and ${bKindStr} is a disallowed combination to perform ${ctx.currentProcedureName} operation`,
+      throw ctx.errorProcedureCall(
+        `${aKindStr} and ${bKindStr} is a disallowed combination to perform ${procName} operation`,
       )
     }
   } else if (a.kind !== kindConstraint || b.kind !== kindConstraint) {
     const kindStr = ObjectKind[kindConstraint]
 
-    throw new Error(
-      `Only ${kindStr}s are allowed to perform ${ctx.currentProcedureName} operation`,
+    throw ctx.errorProcedureCall(
+      `Only ${kindStr}s are allowed to perform ${procName} operation`,
     )
   }
 
@@ -393,7 +455,7 @@ function procedureComparison(ctx: Context) {
     }
 
     const hasLessOrGreater = [">=", "<=", ">", "<"].some(
-      (op) => ctx.currentProcedureName === op,
+      (op) => ctx.currentProcedureName() === op,
     )
     const tryingToCompareNonInteger =
       a !== ObjectKind.Integer || b !== ObjectKind.Integer
@@ -405,10 +467,10 @@ function procedureComparison(ctx: Context) {
     return true
   }
 
-  performBinaryOp(ctx, kindConstraint, (a, b) => {
+  performBinaryOp(ctx, kindConstraint, (a: any, b: any) => {
     let result: boolean
 
-    switch (ctx.currentProcedureName) {
+    switch (ctx.currentProcedureName()) {
       case "=":
         result = a === b
         break
@@ -431,7 +493,11 @@ function procedureComparison(ctx: Context) {
         throw new Unreachable()
     }
 
-    ctx.stack.push({ kind: ObjectKind.Boolean, value: result })
+    ctx.stack.push({
+      kind: ObjectKind.Boolean,
+      value: result,
+      span: ctx.callKeywordSpan()!,
+    })
   })
 }
 
@@ -439,7 +505,7 @@ function procedureLogical(ctx: Context) {
   performBinaryOp(ctx, ObjectKind.Boolean, (a: boolean, b: boolean) => {
     let result: boolean
 
-    switch (ctx.currentProcedureName) {
+    switch (ctx.currentProcedureName()) {
       case "and":
         result = a && b
         break
@@ -450,7 +516,11 @@ function procedureLogical(ctx: Context) {
         throw new Unreachable()
     }
 
-    ctx.stack.push({ kind: ObjectKind.Boolean, value: result })
+    ctx.stack.push({
+      kind: ObjectKind.Boolean,
+      value: result,
+      span: ctx.callKeywordSpan()!,
+    })
   })
 }
 
@@ -458,7 +528,7 @@ function procedureArithmetic(ctx: Context) {
   performBinaryOp(ctx, ObjectKind.Integer, (a: number, b: number) => {
     let result: number
 
-    switch (ctx.currentProcedureName) {
+    switch (ctx.currentProcedureName()) {
       case "+":
         result = a + b
         break
@@ -475,6 +545,10 @@ function procedureArithmetic(ctx: Context) {
         throw new Unreachable()
     }
 
-    ctx.stack.push({ kind: ObjectKind.Integer, value: result })
+    ctx.stack.push({
+      kind: ObjectKind.Integer,
+      value: result,
+      span: ctx.callKeywordSpan()!,
+    })
   })
 }

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 
-import { ParserError } from "./parser.ts"
 import { Context } from "./vm.ts"
+import { PosError } from "./error.ts"
 
 const args = process.argv.slice(2)
 
@@ -18,7 +18,7 @@ try {
   vmContext.eval(fileContent)
 } catch (err) {
   // prettier-ignore
-  const message = (err instanceof ParserError)
+  const message = (err instanceof PosError)
     ? err.formattedMessage()
     : String(err)
 

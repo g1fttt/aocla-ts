@@ -1,9 +1,10 @@
-import { ObjectKind } from "./vm.ts"
-import type { Object } from "./vm.ts"
+import { PosError } from "./error.ts"
+import { ObjectKind, type Object } from "./vm.ts"
 
 export class Parser {
   private readonly source: string
   private globalIndex: number
+
   private relativeIndex: number
   private line: number
 
@@ -34,6 +35,7 @@ export class Parser {
   }
 
   private parseSymbol(args: { isQuoted: boolean }): Object {
+    const startPos = this.objectStartPos()
     const startIndex = this.globalIndex
 
     while (true) {
@@ -51,10 +53,11 @@ export class Parser {
 
     const symbol = this.source.slice(startIndex, this.globalIndex)
 
-    return { kind: ObjectKind.Symbol, value: [symbol, args.isQuoted] }
+    return this.object(ObjectKind.Symbol, [symbol, args.isQuoted], startPos)
   }
 
   private parseInteger(): Object {
+    const startPos = this.objectStartPos()
     const startIndex = this.globalIndex
 
     // Infinite loop prevention
@@ -77,10 +80,12 @@ export class Parser {
 
     const integerAsString = this.source.slice(startIndex, this.globalIndex)
 
-    return { kind: ObjectKind.Integer, value: parseInt(integerAsString) }
+    return this.object(ObjectKind.Integer, parseInt(integerAsString), startPos)
   }
 
   private parseBoolean(): Object {
+    const startPos = this.objectStartPos()
+
     const state = this.nextCharAdvance()
     if (state !== "t" && state !== "f") {
       throw this.error("Booleans can be either #t or #f")
@@ -88,10 +93,12 @@ export class Parser {
 
     this.skipChar()
 
-    return { kind: ObjectKind.Boolean, value: state === "t" }
+    return this.object(ObjectKind.Boolean, state === "t", startPos)
   }
 
   private parseString(): Object {
+    const startPos = this.objectStartPos()
+
     const startIndex = this.globalIndex
 
     while (true) {
@@ -119,10 +126,12 @@ export class Parser {
       return escapeSequences[char] || match
     })
 
-    return { kind: ObjectKind.String, value: unescapedString }
+    return this.object(ObjectKind.String, unescapedString, startPos)
   }
 
-  public parseList(args: { isRoot: boolean } = { isRoot: false }): Object {
+  public parseList(args = { isRoot: false }): Object {
+    const startPos = this.objectStartPos()
+
     if (!args.isRoot) {
       this.skipChar()
     }
@@ -177,10 +186,12 @@ export class Parser {
       objects.push(object)
     }
 
-    return { kind: ObjectKind.List, value: objects }
+    return this.object(ObjectKind.List, objects, startPos)
   }
 
   private parseTuple(args: { isQuoted: boolean }): Object {
+    const startPos = this.objectStartPos()
+
     this.skipChar()
 
     let objects = new Array<Object>()
@@ -204,7 +215,7 @@ export class Parser {
       }
     }
 
-    return { kind: ObjectKind.Tuple, value: [objects, args.isQuoted] }
+    return this.object(ObjectKind.Tuple, [objects, args.isQuoted], startPos)
   }
 
   private currentChar(): string | undefined {
@@ -221,9 +232,12 @@ export class Parser {
     return this.source[this.globalIndex]
   }
 
-  private skipChar() {
+  private skipChar(args = { onlyGlobal: false }) {
     ++this.globalIndex
-    ++this.relativeIndex
+
+    if (!args.onlyGlobal) {
+      ++this.relativeIndex
+    }
   }
 
   private skipWhitespace() {
@@ -242,7 +256,10 @@ export class Parser {
             this.relativeIndex = 0
           }
 
-          break
+          // Already at the end of a line: new-line symbol become "invisible".
+          this.skipChar({ onlyGlobal: true })
+
+          continue
         default:
           break outerLoop
       }
@@ -252,10 +269,34 @@ export class Parser {
   }
 
   private error(message: string): ParserError {
-    return new ParserError(message, this.line, this.relativeIndex)
+    return new ParserError(message, {
+      relativeStart: this.relativeIndex,
+      relativeEnd: -1,
+      line: this.line,
+    })
   }
 
-  private object(kind: ObjectKind, value: any) {}
+  private objectStartPos(): [number, number] {
+    return [this.relativeIndex, this.line]
+  }
+
+  private object(
+    kind: ObjectKind,
+    value: any,
+    start: [number, number],
+  ): Object {
+    const [relativeStart, line] = start
+
+    return {
+      kind,
+      value,
+      span: {
+        relativeStart: relativeStart,
+        relativeEnd: this.relativeIndex,
+        line: line,
+      },
+    }
+  }
 
   private static isInteger(
     currentChar: string,
@@ -279,7 +320,6 @@ export class Parser {
   }
 
   private static isNumeric(char: string): boolean {
-    // TODO: negative numbers
     return char >= "0" && char <= "9"
   }
 
@@ -300,18 +340,18 @@ export class Parser {
   }
 }
 
-export class ParserError extends Error {
-  public readonly row: number
-  public readonly column: number
+export type ParserSpan = {
+  relativeStart: number
+  relativeEnd: number
+  line: number
+}
 
-  public constructor(message: string, row: number, column: number) {
-    super(message)
-
-    this.row = row
-    this.column = column
+export class ParserError extends PosError {
+  public constructor(message: string, span: ParserSpan) {
+    super(message, span)
   }
 
-  public formattedMessage(): string {
-    return `Error occured during parsing phase at ${this.row}:${this.column}. ${this.message}`
+  public override formattedMessage(): string {
+    return `Error occured during parsing phase at ${this.position()}. ${this.message}`
   }
 }
