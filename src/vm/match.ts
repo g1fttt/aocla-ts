@@ -1,4 +1,4 @@
-import type { ParserSpan } from "../parser.ts"
+import { type ParserSpan } from "../parser.ts"
 import { Context, ObjectKind, type Object } from "../vm.ts"
 
 type DefaultBranchPattern = [captureTuple: Array<Object>, tupleSpan: ParserSpan]

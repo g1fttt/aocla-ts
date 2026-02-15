@@ -1,4 +1,4 @@
-import { PosError } from "./error.ts"
+import { type FormattedError } from "./error.ts"
 import { ObjectKind, type Object } from "./vm.ts"
 
 export class Parser {
@@ -269,11 +269,7 @@ export class Parser {
   }
 
   private error(message: string): ParserError {
-    return new ParserError(message, {
-      relativeStart: this.relativeIndex,
-      relativeEnd: -1,
-      line: this.line,
-    })
+    return new ParserError(message, this.relativeIndex, this.line)
   }
 
   private objectStartPos(): [number, number] {
@@ -346,12 +342,18 @@ export type ParserSpan = {
   line: number
 }
 
-export class ParserError extends PosError {
-  public constructor(message: string, span: ParserSpan) {
-    super(message, span)
+export class ParserError implements FormattedError {
+  private readonly message: string
+  private readonly relativeIndex: number
+  private readonly line: number
+
+  public constructor(message: string, relativeIndex: number, line: number) {
+    this.message = message
+    this.relativeIndex = relativeIndex
+    this.line = line
   }
 
-  public override formattedMessage(): string {
-    return `Error occured during parsing phase at ${this.position()}. ${this.message}`
+  public formattedMessage(): string {
+    return `Error occured during parsing phase at ${this.line}:${this.relativeIndex}. ${this.message}.`
   }
 }

@@ -1,4 +1,4 @@
-import { PosError, Unreachable } from "./error.ts"
+import { Unreachable, type FormattedError } from "./error.ts"
 import { Parser, type ParserSpan } from "./parser.ts"
 
 import procedureMatch from "./vm/match.ts"
@@ -55,11 +55,7 @@ export class Context {
   public eval(source: string) {
     const parser = new Parser(source)
 
-    const object = parser.parseObject()
-
-    // console.log(JSON.stringify(object, null, 2))
-
-    this.evalObject(object)
+    this.evalObject(parser.parseObject())
   }
 
   public evalObject(rootObject: Object) {
@@ -132,7 +128,10 @@ export class Context {
         throw this.error(`Unbound procedure: ${symbolName}`, symbolSpan)
       }
 
-      const procedureInfo = { name: symbolName, callKeywordSpan: symbolSpan }
+      const procedureInfo: ProcedureInfo = {
+        name: symbolName,
+        callKeywordSpan: symbolSpan,
+      }
 
       switch (procedure.kind) {
         case ProcedureKind.Native:
@@ -203,14 +202,14 @@ export class Context {
   }
 
   private callNativeProcedure(info: ProcedureInfo, procBody: Object) {
-    const scopeTemp = structuredClone(this.currentScope)
+    const scopeTemp = new Map(this.currentScope)
 
     this.callVirtualProcedure(info, (ctx) => ctx.evalObject(procBody))
     this.currentScope = scopeTemp
   }
 
   private callVirtualProcedure(info: ProcedureInfo, proc: VirtualProcedure) {
-    const procedureInfoTemp = structuredClone(this.currentProcedureInfo)
+    const procedureInfoTemp = this.currentProcedureInfo
 
     this.currentProcedureInfo = info
     {
@@ -241,13 +240,19 @@ export class Context {
   }
 }
 
-export class VmError extends PosError {
+export class VmError implements FormattedError {
+  private readonly message: string
+  private readonly span: ParserSpan
+
   public constructor(message: string, span: ParserSpan) {
-    super(message, span, true /* shouldIncrement */)
+    this.message = message
+    this.span = span
   }
 
-  public override formattedMessage(): string {
-    return `Error occured during evaluating phase at ${this.position()}. ${this.message}`
+  public formattedMessage(): string {
+    const { relativeStart, line } = this.span
+
+    return `Error occured during evaluating phase at ${line}:${relativeStart + 1}. ${this.message}.`
   }
 }
 

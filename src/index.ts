@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 
 import { Context } from "./vm.ts"
-import { PosError } from "./error.ts"
+import { type FormattedError } from "./error.ts"
 
 const args = process.argv.slice(2)
 
@@ -17,10 +17,10 @@ const vmContext = new Context()
 try {
   vmContext.eval(fileContent)
 } catch (err) {
-  // prettier-ignore
-  const message = (err instanceof PosError)
-    ? err.formattedMessage()
-    : String(err)
+  const isFormattedError = (x: any): x is FormattedError =>
+    "FormattedError" in x
 
-  console.error(`${message}.`)
+  const message = isFormattedError(err) ? err.formattedMessage() : String(err)
+
+  console.error(message)
 }
