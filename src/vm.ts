@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs"
+
 import { Unreachable, type FormattedError } from "./error.ts"
 import { Parser, type ParserSpan } from "./parser.ts"
+import { extractModuleName, extractModuleParentPath } from "./utils.ts"
 
 import procedureMatch from "./vm/match.ts"
 
@@ -40,12 +43,14 @@ type ProcedureInfo = {
 }
 
 export class Context {
+  public modulePath: string | null
   public stack: Array<Object>
   public currentProcedureInfo: ProcedureInfo | undefined
-  private procedures: Map<string, Procedure>
-  private currentScope: Map<string, Object>
+  public procedures: Map<string, Procedure>
+  public currentScope: Map<string, Object>
 
-  public constructor() {
+  public constructor(modulePath: string | null) {
+    this.modulePath = modulePath
     this.stack = []
     this.procedures = new Map()
     this.currentScope = new Map()
@@ -122,27 +127,29 @@ export class Context {
       }
 
       this.stack.push(variable)
-    } else {
-      const procedure = this.procedures.get(symbolName)
-      if (!procedure) {
-        throw this.error(`Unbound procedure: ${symbolName}`, symbolSpan)
-      }
 
-      const procedureInfo: ProcedureInfo = {
-        name: symbolName,
-        callKeywordSpan: symbolSpan,
-      }
+      return
+    }
 
-      switch (procedure.kind) {
-        case ProcedureKind.Native:
-          this.callNativeProcedure(procedureInfo, procedure.value)
+    const procedure = this.procedures.get(symbolName)
+    if (!procedure) {
+      throw this.error(`Unbound procedure: ${symbolName}`, symbolSpan)
+    }
 
-          break
-        case ProcedureKind.Virtual:
-          this.callVirtualProcedure(procedureInfo, procedure.value)
+    const procedureInfo: ProcedureInfo = {
+      name: symbolName,
+      callKeywordSpan: symbolSpan,
+    }
 
-          break
-      }
+    switch (procedure.kind) {
+      case ProcedureKind.Native:
+        this.callNativeProcedure(procedureInfo, procedure.value)
+
+        break
+      case ProcedureKind.Virtual:
+        this.callVirtualProcedure(procedureInfo, procedure.value)
+
+        break
     }
   }
 
@@ -187,6 +194,7 @@ export class Context {
     this.addVirtualProcedure("eval", procedureEval)
     this.addVirtualProcedure("panic", procedurePanic)
     this.addVirtualProcedure("type", procedureType)
+    this.addVirtualProcedure("include", procedureInclude)
     this.addVirtualProcedure("+", procedureArithmetic)
     this.addVirtualProcedure("-", procedureArithmetic)
     this.addVirtualProcedure("*", procedureArithmetic)
@@ -408,6 +416,46 @@ function procedureType(ctx: Context) {
     kind: ObjectKind.String,
     value: ObjectKind[stackObject.kind],
   })
+}
+
+function procedureInclude(ctx: Context) {
+  const modulePath = ctx.stack.at(-1)
+  if (!modulePath) {
+    throw ctx.errorProcedureCall("No module path was found on the stack")
+  }
+
+  if (modulePath.kind !== ObjectKind.String) {
+    throw ctx.error("Module path must be of type String", modulePath.span)
+  }
+
+  const moduleName = extractModuleName(modulePath.value)
+  const moduleParentPath = extractModuleParentPath(
+    ctx.modulePath + "/" + modulePath.value,
+  )
+
+  // TODO: Test me
+  const moduleContent = readFileSync(
+    `${moduleParentPath}/${moduleName}.aocla`,
+    "utf-8",
+  )
+
+  const moduleContext = new Context(moduleParentPath)
+  moduleContext.eval(moduleContent)
+
+  for (const [procName, proc] of moduleContext.procedures) {
+    const prefixedProcName = moduleName + "." + procName
+
+    switch (proc.kind) {
+      case ProcedureKind.Native:
+        ctx.addNativeProcedureObject(prefixedProcName, proc.value)
+
+        break
+      case ProcedureKind.Virtual:
+        // No-op
+
+        break
+    }
+  }
 }
 
 type BinaryOpKindConstraint = (a: ObjectKind, b: ObjectKind) => boolean

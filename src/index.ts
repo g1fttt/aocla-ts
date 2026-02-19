@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs"
+import { resolve as resolvePath } from "node:path"
 
 import { Context } from "./vm.ts"
 import { type FormattedError } from "./error.ts"
+import { extractModuleParentPath } from "./utils.ts"
 
 const args = process.argv.slice(2)
 
@@ -12,7 +14,9 @@ if (args.length < 1) {
 const filePath = args[0]!
 const fileContent = readFileSync(filePath, "utf-8")
 
-const vmContext = new Context()
+const rootModulePath = extractModuleParentPath(resolvePath(filePath))
+
+const vmContext = new Context(rootModulePath)
 
 try {
   vmContext.eval(fileContent)
