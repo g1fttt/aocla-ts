@@ -1,3 +1,3 @@
-"io.aocla" include
+"std/io.aocla" include
 
 "Hello, World!" io.println

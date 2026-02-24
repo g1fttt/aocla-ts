@@ -341,7 +341,7 @@ function procedureProc(ctx: Context) {
   const procedureName = ctx.stack.pop()
   if (!procedureName) {
     throw ctx.errorProcedureCall(
-      "Cannot obtain a procedure name due to empty stack",
+      "Cannot define procedure due to missing procedure name at the stack",
     )
   }
 
@@ -433,28 +433,29 @@ function procedureInclude(ctx: Context) {
     ctx.modulePath + "/" + modulePath.value,
   )
 
-  // TODO: Test me
-  const moduleContent = readFileSync(
-    `${moduleParentPath}/${moduleName}.aocla`,
-    "utf-8",
-  )
+  try {
+    var moduleContent = readFileSync(
+      `${moduleParentPath}/${moduleName}.aocla`,
+      "utf-8",
+    )
+  } catch (err) {
+    throw ctx.error(
+      `No module was found in the provided path: ${err}`,
+      modulePath.span,
+    )
+  }
 
   const moduleContext = new Context(moduleParentPath)
   moduleContext.eval(moduleContent)
 
   for (const [procName, proc] of moduleContext.procedures) {
+    if (proc.kind === ProcedureKind.Virtual) {
+      continue
+    }
+
     const prefixedProcName = moduleName + "." + procName
 
-    switch (proc.kind) {
-      case ProcedureKind.Native:
-        ctx.addNativeProcedureObject(prefixedProcName, proc.value)
-
-        break
-      case ProcedureKind.Virtual:
-        // No-op
-
-        break
-    }
+    ctx.addNativeProcedureObject(prefixedProcName, proc.value)
   }
 }
 

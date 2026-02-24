@@ -1,1 +1,3 @@
+"test.aocla" include
+
 [print "\n" print drop] 'println proc
