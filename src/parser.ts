@@ -205,7 +205,7 @@ export class Parser {
           break outerLoop
         default:
           throw this.error(
-            `Found invalid token inside Tuple: ${currentToken}`,
+            `Found invalid token inside Tuple: ${currentToken.string}`,
             currentToken.span,
           )
       }
@@ -265,7 +265,7 @@ export class Parser {
   }
 
   private error(message: string, span: TokenSpan): ParserError {
-    return new ParserError(message, span.relativeStart, span.line)
+    return new ParserError(message, span.relative.start, span.line)
   }
 }
 
@@ -284,14 +284,14 @@ export enum SymbolKind {
 }
 
 export type Symbol = {
-  name: string
-  kind: SymbolKind
-  isQuoted: boolean
+  readonly name: string
+  readonly kind: SymbolKind
+  readonly isQuoted: boolean
 }
 
 export type Tuple = {
-  objects: Array<Object>
-  isQuoted: boolean
+  readonly objects: Array<Object>
+  readonly isQuoted: boolean
 }
 
 export type ObjectData =

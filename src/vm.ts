@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 
-import type { Object, RootObject } from "./parser.ts"
+import type { Object, RootObject, Symbol } from "./parser.ts"
 import { Parser, ObjectKind, SymbolKind } from "./parser.ts"
 
 import { Unreachable, type FormattedError } from "./error.ts"
@@ -65,14 +65,7 @@ export class Context {
     }
 
     for (const object of objects.toReversed()) {
-      if (object.kind !== ObjectKind.Symbol) {
-        throw this.error(
-          "Only objects of type Symbol can be used for capture",
-          object.span,
-        )
-      }
-
-      const { name } = object.value
+      const { name } = object.value as Symbol
       const stackObject = this.stack.pop()!
 
       this.currentScope.set(name, stackObject)
@@ -95,7 +88,7 @@ export class Context {
   public evalVariable(name: string, span: TokenSpan) {
     const variable = this.currentScope.get(name)
     if (!variable) {
-      throw this.error(`Unbound local variable: ${name}`, span)
+      throw this.error(`Unbound local variable: '${name}'`, span)
     }
 
     this.stack.push(variable)
@@ -104,7 +97,7 @@ export class Context {
   public evalProcedure(name: string, span: TokenSpan) {
     const procedure = this.procedures.get(name)
     if (!procedure) {
-      throw this.error(`Unbound procedure: ${name}`, span)
+      throw this.error(`Unbound procedure: '${name}'`, span)
     }
 
     const procedureInfo: ProcedureInfo = { name, callKeywordSpan: span }
@@ -220,6 +213,8 @@ export class Context {
 
 function procedurePrint(ctx: Context) {
   function printObject(object: Object) {
+    const stdout = process.stdout
+
     switch (object.kind) {
       case ObjectKind.List:
       case ObjectKind.Tuple:
@@ -230,12 +225,16 @@ function procedurePrint(ctx: Context) {
 
         for (const elementObject of sequenceValue) {
           printObject(elementObject)
-          process.stdout.write(" ")
+          stdout.write(" ")
         }
 
         break
+      case ObjectKind.Symbol:
+        stdout.write(object.value.name)
+
+        break
       default:
-        process.stdout.write(`${object.value}`)
+        stdout.write(String(object.value))
 
         break
     }
@@ -250,7 +249,7 @@ function procedurePrint(ctx: Context) {
 }
 
 function procedureDrop(ctx: Context) {
-  if (ctx.stack.pop() === undefined) {
+  if (!ctx.stack.pop()) {
     throw ctx.errorProcedureCall("Cannot drop from empty stack")
   }
 }
@@ -588,8 +587,8 @@ export class VmError implements FormattedError {
   }
 
   public formattedMessage(): string {
-    const { relativeStart, line } = this.span
+    const { relative, line } = this.span
 
-    return `Error occured during evaluating phase at ${line}:${relativeStart + 1}. ${this.message}.`
+    return `Error occured during evaluating phase at ${line}:${relative.start + 1}. ${this.message}.`
   }
 }

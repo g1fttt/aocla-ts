@@ -33,39 +33,42 @@ export class Tokenizer {
 
         continue
       } else {
-        switch (currentChar) {
-          case "[":
-            this.pushToken(TokenKind.LeftBracket)
-            break
-          case "(":
-            this.pushToken(TokenKind.LeftParen)
-            break
-          case "]":
-            this.pushToken(TokenKind.RightBracket)
-            break
-          case ")":
-            this.pushToken(TokenKind.RightParen)
-            break
-          case "#":
-            this.pushToken(TokenKind.Hash)
-            break
-          case "@":
-            this.pushToken(TokenKind.At)
-            break
-          case "'":
-            this.pushToken(TokenKind.SingleQuote)
-            break
-          case '"':
-            this.extractString()
-            break
-          default:
-            throw this.error(`Invalid symbol: ${currentChar}`)
-        }
-
+        this.matchChar(currentChar)
         this.skipChar()
       }
     }
     return this.tokens
+  }
+
+  private matchChar(currentChar: string) {
+    switch (currentChar) {
+      case "[":
+        this.pushToken(TokenKind.LeftBracket)
+        break
+      case "(":
+        this.pushToken(TokenKind.LeftParen)
+        break
+      case "]":
+        this.pushToken(TokenKind.RightBracket)
+        break
+      case ")":
+        this.pushToken(TokenKind.RightParen)
+        break
+      case "#":
+        this.pushToken(TokenKind.Hash)
+        break
+      case "@":
+        this.pushToken(TokenKind.At)
+        break
+      case "'":
+        this.pushToken(TokenKind.SingleQuote)
+        break
+      case '"':
+        this.extractString()
+        break
+      default:
+        throw this.error(`Invalid symbol: ${currentChar}`)
+    }
   }
 
   private extractInteger() {
@@ -191,24 +194,17 @@ export class Tokenizer {
     const [globalStart, relativeStart, line] = startPos || this.tokenStartPos()
 
     let globalEnd = this.globalIndex
-    let relativeEnd = this.relativeIndex
 
     if (!startPos) {
       ++globalEnd
-      ++relativeEnd
     }
 
-    const tokenString = this.source.slice(globalStart, globalEnd)
-    const tokenSpan = new TokenSpan(
-      globalStart,
-      globalEnd,
-      relativeStart,
-      relativeEnd,
-      line,
-    )
+    const length = globalEnd - globalStart
 
-    const token = new Token(tokenString, kind, tokenSpan)
-    this.tokens.push(token)
+    const tokenString = this.source.slice(globalStart, globalEnd)
+    const tokenSpan = new TokenSpan(globalStart, relativeStart, length, line)
+
+    this.tokens.push({ string: tokenString, kind, span: tokenSpan })
   }
 
   private static isInteger(
@@ -253,53 +249,40 @@ export class Tokenizer {
   }
 }
 
+export type Span = { start: number; end: number }
+
 export class TokenSpan {
+  public readonly global: Span
+  public readonly relative: Span
+  public readonly line: number
+
   public constructor(
-    public readonly globalStart: number,
-    public readonly globalEnd: number,
-
-    public readonly relativeStart: number,
-    public readonly relativeEnd: number,
-
-    public readonly line: number,
-  ) {}
+    globalStart: number,
+    relativeStart: number,
+    length: number,
+    line: number,
+  ) {
+    this.global = { start: globalStart, end: globalStart + length }
+    this.relative = { start: relativeStart, end: relativeStart + length }
+    this.line = line
+  }
 
   public combinedWith(other: TokenSpan): TokenSpan {
-    const globalStart = Math.min(this.globalStart, other.globalStart)
-    const globalEnd = Math.max(this.globalEnd, other.globalEnd)
-
-    const relativeStart = Math.min(this.relativeStart, other.relativeStart)
-    const relativeEnd = Math.max(this.relativeEnd, other.relativeEnd)
-
+    const globalStart = Math.min(this.global.start, other.global.start)
+    const relativeStart = Math.min(this.relative.start, other.relative.start)
+    const length =
+      Math.max(this.global.start, other.global.start) -
+      Math.min(this.global.start, other.global.start)
     const line = Math.min(this.line, other.line)
 
-    return new TokenSpan(
-      globalStart,
-      globalEnd,
-      relativeStart,
-      relativeEnd,
-      line,
-    )
+    return new TokenSpan(globalStart, relativeStart, length, line)
   }
 }
 
-export class Token {
-  public constructor(
-    public readonly string: string,
-    public readonly kind: TokenKind,
-    public readonly span: TokenSpan,
-  ) {}
-
-  //   // TODO
-  //   public errorIfNot(kind: TokenKind, spanToCombineWith?: TokenSpan) {
-  //     // prettier-ignore
-  //     const span = spanToCombineWith !== undefined
-  //       ? this.span.combinedWith(spanToCombineWith)
-  //       : this.span
-  //
-  //     // if (this.kind !== kind) {
-  //     // }
-  //   }
+export type Token = {
+  readonly string: string
+  readonly kind: TokenKind
+  readonly span: TokenSpan
 }
 
 export enum TokenKind {
