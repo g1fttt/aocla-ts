@@ -1,18 +1,22 @@
-import { type ParserSpan } from "../parser.ts"
-import { Context, ObjectKind, type Object } from "../vm.ts"
+import { ObjectKind, type Object } from "../parser.ts"
+import { TokenSpan } from "../tokenizer.ts"
+import { Context } from "../vm.ts"
 
-type DefaultBranchPattern = [captureTuple: Array<Object>, tupleSpan: ParserSpan]
+type DefaultBranchPattern = {
+  objects: Array<Object>
+  span: TokenSpan
+}
 
-type MatchedBranch = [
-  pattern: DefaultBranchPattern | undefined,
-  handler: Object,
-]
+type MatchedBranch = {
+  pattern: DefaultBranchPattern | undefined
+  handler: Object
+}
 
 class Match {
   private readonly selector: Object
   private readonly branches: Map<any, Object>
   private readonly defaultBranch:
-    | [pattern: DefaultBranchPattern, handler: Object]
+    | { pattern: DefaultBranchPattern; handler: Object }
     | undefined
 
   public constructor(ctx: Context) {
@@ -48,6 +52,13 @@ class Match {
         throw ctx.error("Match expression is missing handler", branchSpan)
       }
 
+      if (handler.kind !== ObjectKind.List) {
+        throw ctx.error(
+          "Only Lists are allowed to be used as the match expression handler",
+          branchSpan,
+        )
+      }
+
       if (pattern.kind === ObjectKind.Tuple) {
         if (this.defaultBranch !== undefined) {
           throw ctx.error(
@@ -56,13 +67,12 @@ class Match {
           )
         }
 
-        const captureTuple = pattern.value[0]!
-        const defaultBranchPattern: DefaultBranchPattern = [
-          captureTuple,
-          pattern.span,
-        ]
+        const defaultBranchPattern: DefaultBranchPattern = {
+          objects: pattern.value.objects,
+          span: pattern.span,
+        }
 
-        this.defaultBranch = [defaultBranchPattern, handler]
+        this.defaultBranch = { pattern: defaultBranchPattern, handler }
       } else {
         this.branches.set(pattern.value, handler)
       }
@@ -74,7 +84,7 @@ class Match {
     if (handler) {
       // We don't need to return any patterns here since we're already matched it before.
       // Return handler to callee in order to interpret it and get desired result.
-      return [undefined, handler]
+      return { pattern: undefined, handler }
     }
 
     if (this.defaultBranch) {
@@ -91,13 +101,13 @@ export default function procedureMatch(ctx: Context) {
     return
   }
 
-  const [pattern, handler] = matchedBranch
+  const { pattern, handler } = matchedBranch
 
   if (pattern) {
-    const [captureTuple, tupleSpan] = pattern
+    const { objects, span } = pattern
 
-    ctx.evalTuple(captureTuple, tupleSpan)
+    ctx.evalTuple(objects, span)
   }
 
-  ctx.evalObject(handler)
+  ctx.evalObjectArray(handler.value as Array<Object>)
 }

@@ -1,120 +1,105 @@
-import { type FormattedError } from "./error.ts"
-import { ObjectKind, type Object } from "./vm.ts"
+import { Tokenizer, TokenKind, TokenSpan } from "./tokenizer.ts"
+import { type Token } from "./tokenizer.ts"
+
+import { Unreachable, type FormattedError } from "./error.ts"
 
 export class Parser {
-  private readonly source: string
-  private globalIndex: number
+  private readonly tokens: Array<Token>
+  private currentTokenIndex: number
 
-  private relativeIndex: number
-  private line: number
+  private objects: Array<Object>
 
-  public constructor(source: string) {
-    this.source = source
-    this.globalIndex = 0
-    this.relativeIndex = 0
-    this.line = 1
+  // Used inside currentToken() method for throwing error in case of EOF
+  private lastTokenSpan: TokenSpan | undefined
+
+  constructor(source: string) {
+    const t = new Tokenizer(source)
+
+    this.tokens = t.extractTokens()
+    this.currentTokenIndex = 0
+
+    this.objects = new Array()
   }
 
-  public parseObject(): Object {
-    return this.parseList({ isRoot: true })
-  }
-
-  private parseQuoted(): Object {
-    const nextChar = this.nextCharAdvance()
-    if (!nextChar) {
-      throw this.error("Nothing to quote")
-    }
-
-    if (Parser.isSymbol(nextChar)) {
-      return this.parseSymbol({ isQuoted: true })
-    } else if (nextChar === "(") {
-      return this.parseTuple({ isQuoted: true })
-    } else {
-      throw this.error("Only Symbol and Tuple are allowed to be quoted")
-    }
-  }
-
-  private parseSymbol(args: { isQuoted: boolean }): Object {
-    const startPos = this.objectStartPos()
-    const startIndex = this.globalIndex
-
-    while (true) {
-      let currentChar = this.currentChar()
-      if (!currentChar) {
+  public parseAST(): Array<Object> {
+    while (!this.isAtEOF()) {
+      try {
+        var currentToken = this.currentTokenAdvance()
+      } catch {
         break
       }
 
-      if (!Parser.isSymbol(currentChar) && !Parser.isNumeric(currentChar)) {
-        break
-      }
-
-      this.skipChar()
+      this.objects.push(this.parseObjectSingle(currentToken))
     }
 
-    const symbol = this.source.slice(startIndex, this.globalIndex)
-
-    return this.object(ObjectKind.Symbol, [symbol, args.isQuoted], startPos)
+    return this.objects
   }
 
-  private parseInteger(): Object {
-    const startPos = this.objectStartPos()
-    const startIndex = this.globalIndex
-
-    // Infinite loop prevention
-    if (this.currentChar() === "-") {
-      this.skipChar()
+  private parseObjectSingle(token: Token): Object {
+    switch (token.kind) {
+      case TokenKind.Numeric:
+        return this.parseInteger(token)
+      case TokenKind.Symbol:
+        return this.parseProcedure(token)
+      case TokenKind.String:
+        return this.parseString(token)
+      case TokenKind.LeftBracket:
+        return this.parseList(token)
+      case TokenKind.LeftParen:
+        return this.parseTuple(token)
+      case TokenKind.SingleQuote:
+        return this.parseQuoted(token)
+      case TokenKind.Hash:
+        return this.parseBoolean(token)
+      case TokenKind.At:
+        return this.parseVariable(token)
+      default:
+        throw this.error(`Invalid token: ${token.string}`, token.span)
     }
-
-    while (true) {
-      const currentChar = this.currentChar()
-      if (!currentChar) {
-        break
-      }
-
-      if (!Parser.isNumeric(currentChar)) {
-        break
-      }
-
-      this.skipChar()
-    }
-
-    const integerAsString = this.source.slice(startIndex, this.globalIndex)
-
-    return this.object(ObjectKind.Integer, parseInt(integerAsString), startPos)
   }
 
-  private parseBoolean(): Object {
-    const startPos = this.objectStartPos()
-
-    const state = this.nextCharAdvance()
-    if (state !== "t" && state !== "f") {
-      throw this.error("Booleans can be either #t or #f")
+  private parseInteger(token: Token): Object {
+    return {
+      kind: ObjectKind.Integer,
+      value: parseInt(token.string),
+      span: token.span,
     }
-
-    this.skipChar()
-
-    return this.object(ObjectKind.Boolean, state === "t", startPos)
   }
 
-  private parseString(): Object {
-    const startPos = this.objectStartPos()
+  private parseSymbol(
+    name: string,
+    span: TokenSpan,
+    kind: SymbolKind,
+    args = { isQuoted: false },
+  ): Object {
+    const value: Symbol = { name, kind, isQuoted: args.isQuoted }
 
-    const startIndex = this.globalIndex
+    return { kind: ObjectKind.Symbol, value, span }
+  }
 
-    while (true) {
-      const currentChar = this.nextCharAdvance()
-      if (!currentChar) {
-        throw this.error("String was never closed")
-      }
+  private parseProcedure(token: Token, args = { isQuoted: false }): Object {
+    return this.parseSymbol(
+      token.string,
+      token.span,
+      SymbolKind.Procedure,
+      args,
+    )
+  }
 
-      if (currentChar === '"') {
-        this.skipChar()
+  private parseVariable(atToken: Token): Object {
+    const [nameToken, ok] = this.skipTokenIfIs(TokenKind.Symbol)
 
-        break
-      }
+    const combinedSpan = atToken.span.combinedWith(nameToken.span)
+
+    if (!ok) {
+      throw this.error("Variable name must be of type Symbol", combinedSpan)
     }
 
-    const string = this.source.slice(startIndex + 1, this.globalIndex - 1)
+    return this.parseSymbol(nameToken.string, combinedSpan, SymbolKind.Variable)
+  }
+
+  private parseString(token: Token): Object {
+    const unquotedString = token.string.slice(1, -1)
 
     const escapeSequences: Record<string, string> = {
       n: "\n",
@@ -122,226 +107,204 @@ export class Parser {
       r: "\r",
     }
 
-    const unescapedString = string.replace(/\\(.)/g, (match, char) => {
+    const unescapedString = unquotedString.replace(/\\(.)/g, (match, char) => {
       return escapeSequences[char] || match
     })
 
-    return this.object(ObjectKind.String, unescapedString, startPos)
+    return { kind: ObjectKind.String, value: unescapedString, span: token.span }
   }
 
-  public parseList(args = { isRoot: false }): Object {
-    const startPos = this.objectStartPos()
+  private parseQuoted(quoteToken: Token): Object {
+    const [currentToken, ok] = this.skipTokenIfAny([
+      TokenKind.Symbol,
+      TokenKind.LeftParen,
+    ])
 
-    if (!args.isRoot) {
-      this.skipChar()
+    const combinedSpan = quoteToken.span.combinedWith(currentToken.span)
+
+    if (!ok) {
+      throw this.error(
+        `Found invalid token inside quoted expression: ${currentToken.string}`,
+        combinedSpan,
+      )
     }
 
+    switch (currentToken.kind) {
+      case TokenKind.Symbol:
+        return this.parseProcedure(currentToken, { isQuoted: true })
+      case TokenKind.LeftParen:
+        return this.parseTuple(currentToken, { isQuoted: true })
+      default:
+        throw new Unreachable()
+    }
+  }
+
+  private parseBoolean(hashToken: Token): Object {
+    const [stateToken, ok] = this.skipTokenIfIs(TokenKind.Symbol)
+
+    const combinedSpan = hashToken.span.combinedWith(stateToken.span)
+
+    if (!ok) {
+      throw this.error("Boolean state must be of type Symbol", combinedSpan)
+    }
+
+    const state = { t: true, f: false }[stateToken.string]
+
+    if (state === undefined) {
+      throw this.error(
+        "Boolean state must be either 't(rue)' or 'f(alse)'",
+        combinedSpan,
+      )
+    }
+
+    return { kind: ObjectKind.Boolean, value: state, span: combinedSpan }
+  }
+
+  private parseList(leftBracketToken: Token): Object {
     let objects = new Array<Object>()
+    let rightBracketSpan: TokenSpan
 
     while (true) {
-      const currentChar = this.currentChar()
-      if (!currentChar) {
-        if (args.isRoot) break
-        else throw this.error("List was never closed")
-      }
+      const currentToken = this.currentTokenAdvance()
 
-      if (currentChar === "]" && !args.isRoot) {
-        this.skipChar()
+      if (currentToken.kind === TokenKind.RightBracket) {
+        rightBracketSpan = currentToken.span
 
         break
       }
 
-      let object: Object
-
-      if (Parser.isInteger(currentChar, this.nextChar())) {
-        object = this.parseInteger()
-      } else if (Parser.isSymbol(currentChar)) {
-        object = this.parseSymbol({ isQuoted: false })
-      } else if (Parser.isWhitespace(currentChar)) {
-        this.skipWhitespace()
-
-        continue
-      } else {
-        switch (currentChar) {
-          case "[":
-            object = this.parseList()
-            break
-          case "(":
-            object = this.parseTuple({ isQuoted: false })
-            break
-          case "#":
-            object = this.parseBoolean()
-            break
-          case '"':
-            object = this.parseString()
-            break
-          case "'":
-            object = this.parseQuoted()
-            break
-          default:
-            throw this.error(`Invalid symbol: ${currentChar}`)
-        }
-      }
-
-      objects.push(object)
+      objects.push(this.parseObjectSingle(currentToken))
     }
 
-    return this.object(ObjectKind.List, objects, startPos)
+    const combinedSpan = leftBracketToken.span.combinedWith(rightBracketSpan)
+
+    return { kind: ObjectKind.List, value: objects, span: combinedSpan }
   }
 
-  private parseTuple(args: { isQuoted: boolean }): Object {
-    const startPos = this.objectStartPos()
-
-    this.skipChar()
-
-    let objects = new Array<Object>()
-
-    while (true) {
-      const currentChar = this.currentChar()
-      if (!currentChar) {
-        throw this.error("Tuple was never closed")
-      }
-
-      if (Parser.isWhitespace(currentChar)) {
-        this.skipWhitespace()
-
-        continue
-      } else if (Parser.isSymbol(currentChar)) {
-        objects.push(this.parseSymbol({ isQuoted: false }))
-      } else if (currentChar === ")") {
-        this.skipChar()
-
-        break
-      }
-    }
-
-    return this.object(ObjectKind.Tuple, [objects, args.isQuoted], startPos)
-  }
-
-  private currentChar(): string | undefined {
-    return this.source[this.globalIndex]
-  }
-
-  private nextChar(): string | undefined {
-    return this.source[this.globalIndex + 1]
-  }
-
-  private nextCharAdvance(): string | undefined {
-    this.skipChar()
-
-    return this.source[this.globalIndex]
-  }
-
-  private skipChar(args = { onlyGlobal: false }) {
-    ++this.globalIndex
-
-    if (!args.onlyGlobal) {
-      ++this.relativeIndex
-    }
-  }
-
-  private skipWhitespace() {
-    outerLoop: while (true) {
-      const currentChar = this.currentChar()
-      if (!currentChar) {
-        break
-      }
-
-      switch (currentChar) {
-        case " ":
-          break
-        case "\n":
-          if (this.globalIndex < this.source.length - 1) {
-            ++this.line
-            this.relativeIndex = 0
-          }
-
-          // Already at the end of a line: new-line symbol become "invisible".
-          this.skipChar({ onlyGlobal: true })
-
-          continue
-        default:
-          break outerLoop
-      }
-
-      this.skipChar()
-    }
-  }
-
-  private error(message: string): ParserError {
-    return new ParserError(message, this.relativeIndex, this.line)
-  }
-
-  private objectStartPos(): [number, number] {
-    return [this.relativeIndex, this.line]
-  }
-
-  private object(
-    kind: ObjectKind,
-    value: any,
-    start: [number, number],
+  private parseTuple(
+    leftParenToken: Token,
+    args = { isQuoted: false },
   ): Object {
-    const [relativeStart, line] = start
+    let objects = new Array<Object>()
+    let rightParenSpan: TokenSpan
 
-    return {
-      kind,
-      value,
-      span: {
-        relativeStart: relativeStart,
-        relativeEnd: this.relativeIndex,
-        line: line,
-      },
+    outerLoop: while (true) {
+      const currentToken = this.currentTokenAdvance()
+
+      switch (currentToken.kind) {
+        case TokenKind.Symbol:
+          const { string, span } = currentToken
+
+          const symbol = this.parseSymbol(string, span, SymbolKind.Variable)
+          objects.push(symbol)
+
+          break
+        case TokenKind.RightParen:
+          rightParenSpan = currentToken.span
+
+          break outerLoop
+        default:
+          throw this.error(
+            `Found invalid token inside Tuple: ${currentToken}`,
+            currentToken.span,
+          )
+      }
     }
+
+    const combinedSpan = leftParenToken.span.combinedWith(rightParenSpan)
+    const value: Tuple = { objects, isQuoted: args.isQuoted }
+
+    return { kind: ObjectKind.Tuple, value, span: combinedSpan }
   }
 
-  private static isInteger(
-    currentChar: string,
-    nextChar: string | undefined,
-  ): boolean {
-    const isNumeric = Parser.isNumeric(currentChar)
+  private isAtEOF(): boolean {
+    return this.currentTokenIndex >= this.tokens.length
+  }
 
-    if (!nextChar) {
-      return isNumeric
+  private currentToken(args = { offset: 0 }): Token {
+    const token = this.tokens[this.currentTokenIndex + args.offset]
+    if (!token) {
+      throw this.error("Unexpected EOF", this.lastTokenSpan!)
     }
 
-    return isNumeric || Parser.isNegativeNumeric(currentChar, nextChar)
+    this.lastTokenSpan = token.span
+
+    return token
   }
 
-  private static isWhitespace(char: string): boolean {
-    return [" ", "\n"].includes(char)
+  private skipTokenIf(pred: (kind: TokenKind) => boolean): [Token, boolean] {
+    const token = this.currentToken()
+
+    if (pred(token.kind)) {
+      this.skipToken()
+
+      return [token, true]
+    }
+
+    return [token, false]
   }
 
-  private static isNegativeNumeric(char: string, nextChar: string): boolean {
-    return char === "-" && Parser.isNumeric(nextChar)
+  private skipTokenIfAny(kinds: Array<TokenKind>): [Token, boolean] {
+    return this.skipTokenIf((kind) => kinds.includes(kind))
   }
 
-  private static isNumeric(char: string): boolean {
-    return char >= "0" && char <= "9"
+  private skipTokenIfIs(kind: TokenKind): [Token, boolean] {
+    return this.skipTokenIf((_kind) => _kind === kind)
   }
 
-  private static isSymbol(char: string): boolean {
-    // prettier-ignore
-    const specialSymbols = [
-      "_", "@", "$", "+",
-      "-", "*", "/", "=",
-      "?", "!", "%", ">",
-      "<", "&", "|", "~",
-      "."
-    ]
+  private currentTokenAdvance(): Token {
+    const token = this.currentToken()
 
-    return (
-      (char >= "a" && char <= "z") ||
-      (char >= "A" && char <= "Z") ||
-      specialSymbols.includes(char)
-    )
+    this.skipToken()
+
+    return token
+  }
+
+  private skipToken() {
+    ++this.currentTokenIndex
+  }
+
+  private error(message: string, span: TokenSpan): ParserError {
+    return new ParserError(message, span.relativeStart, span.line)
   }
 }
 
-export type ParserSpan = {
-  relativeStart: number
-  relativeEnd: number
-  line: number
+export enum ObjectKind {
+  Integer,
+  List,
+  Tuple,
+  String,
+  Boolean,
+  Symbol,
 }
+
+export enum SymbolKind {
+  Variable,
+  Procedure,
+}
+
+export type Symbol = {
+  name: string
+  kind: SymbolKind
+  isQuoted: boolean
+}
+
+export type Tuple = {
+  objects: Array<Object>
+  isQuoted: boolean
+}
+
+export type ObjectData =
+  | { kind: ObjectKind.Integer; value: number }
+  | { kind: ObjectKind.List; value: Array<Object> }
+  | { kind: ObjectKind.Tuple; value: Tuple }
+  | { kind: ObjectKind.String; value: string }
+  | { kind: ObjectKind.Boolean; value: boolean }
+  | { kind: ObjectKind.Symbol; value: Symbol }
+
+export type Object = ObjectData & { span: TokenSpan }
+
+export type RootObject = Array<Object>
 
 export class ParserError implements FormattedError {
   private readonly message: string

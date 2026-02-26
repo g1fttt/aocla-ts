@@ -1,46 +1,13 @@
 import { readFileSync } from "node:fs"
 
+import type { Object, RootObject } from "./parser.ts"
+import { Parser, ObjectKind, SymbolKind } from "./parser.ts"
+
 import { Unreachable, type FormattedError } from "./error.ts"
-import { Parser, type ParserSpan } from "./parser.ts"
+import { type TokenSpan } from "./tokenizer.ts"
 import { extractModuleName, extractModuleParentPath } from "./utils.ts"
 
 import procedureMatch from "./vm/match.ts"
-
-export enum ObjectKind {
-  Integer,
-  List,
-  Tuple,
-  String,
-  Boolean,
-  Symbol,
-}
-
-export type ObjectData =
-  | { kind: ObjectKind.Integer; value: number }
-  | { kind: ObjectKind.List; value: Array<Object> }
-  | { kind: ObjectKind.Tuple; value: [Array<Object>, isQuoted: boolean] }
-  | { kind: ObjectKind.String; value: string }
-  | { kind: ObjectKind.Boolean; value: boolean }
-  | { kind: ObjectKind.Symbol; value: [string, isQuoted: boolean] }
-
-export type Object = ObjectData & { span: ParserSpan }
-
-export type VirtualProcedure = (ctx: Context) => void
-
-enum ProcedureKind {
-  Native,
-  Virtual,
-}
-
-type Procedure =
-  | { kind: ProcedureKind.Native; value: Object }
-  | { kind: ProcedureKind.Virtual; value: VirtualProcedure }
-
-type ProcedureInfo = {
-  name: string
-  // Used for error logging during procedure call
-  callKeywordSpan: ParserSpan
-}
 
 export class Context {
   public modulePath: string | null
@@ -51,55 +18,53 @@ export class Context {
 
   public constructor(modulePath: string | null) {
     this.modulePath = modulePath
-    this.stack = []
+    this.stack = new Array()
     this.procedures = new Map()
     this.currentScope = new Map()
     this.setupBuiltins()
   }
 
-  public eval(source: string) {
+  public evalString(source: string) {
     const parser = new Parser(source)
 
-    this.evalObject(parser.parseObject())
+    this.evalObjectArray(parser.parseAST())
   }
 
-  public evalObject(rootObject: Object) {
-    if (rootObject.kind !== ObjectKind.List) {
-      throw this.error("Root object must be of type List", rootObject.span)
-    }
+  public evalObjectArray(rootObject: RootObject) {
+    rootObject.forEach((object) => this.evalObjectSingle(object))
+  }
 
-    for (const object of rootObject.value) {
-      switch (object.kind) {
-        case ObjectKind.Tuple: {
-          const [tuple, isQuoted] = object.value
+  public evalObjectSingle(object: Object) {
+    switch (object.kind) {
+      case ObjectKind.Tuple: {
+        const { objects, isQuoted } = object.value
 
-          if (isQuoted) this.dequoteAndPushToStack(object)
-          else this.evalTuple(tuple, object.span)
+        if (isQuoted) this.dequoteAndPushToStack(object)
+        else this.evalTuple(objects, object.span)
 
-          break
-        }
-        case ObjectKind.Symbol: {
-          const [symbolName, isQuoted] = object.value
-
-          if (isQuoted) this.dequoteAndPushToStack(object)
-          else this.evalSymbol(symbolName, object.span)
-
-          break
-        }
-        default:
-          this.stack.push(object)
-
-          break
+        break
       }
+      case ObjectKind.Symbol: {
+        const { name, kind, isQuoted } = object.value
+
+        if (isQuoted) this.dequoteAndPushToStack(object)
+        else this.evalSymbol(name, kind, object.span)
+
+        break
+      }
+      default:
+        this.stack.push(object)
+
+        break
     }
   }
 
-  public evalTuple(tuple: Array<Object>, tupleSpan: ParserSpan) {
-    if (tuple.length > this.stack.length) {
-      throw this.error("Out of stack while capturing local variable", tupleSpan)
+  public evalTuple(objects: Array<Object>, span: TokenSpan) {
+    if (objects.length > this.stack.length) {
+      throw this.error("Out of stack while capturing local variable", span)
     }
 
-    for (const object of tuple.toReversed()) {
+    for (const object of objects.toReversed()) {
       if (object.kind !== ObjectKind.Symbol) {
         throw this.error(
           "Only objects of type Symbol can be used for capture",
@@ -107,39 +72,42 @@ export class Context {
         )
       }
 
-      const symbolName = object.value[0]!
+      const { name } = object.value
       const stackObject = this.stack.pop()!
 
-      this.currentScope.set(symbolName, stackObject)
+      this.currentScope.set(name, stackObject)
     }
   }
 
-  public evalSymbol(symbolName: string, symbolSpan: ParserSpan) {
-    if (symbolName.startsWith("@")) {
-      const strippedSymbolName = symbolName.slice(1)
+  public evalSymbol(name: string, kind: SymbolKind, span: TokenSpan) {
+    switch (kind) {
+      case SymbolKind.Variable:
+        this.evalVariable(name, span)
 
-      const variable = this.currentScope.get(strippedSymbolName)
-      if (!variable) {
-        throw this.error(
-          `Unbound local variable: ${strippedSymbolName}`,
-          symbolSpan,
-        )
-      }
+        break
+      case SymbolKind.Procedure:
+        this.evalProcedure(name, span)
 
-      this.stack.push(variable)
+        break
+    }
+  }
 
-      return
+  public evalVariable(name: string, span: TokenSpan) {
+    const variable = this.currentScope.get(name)
+    if (!variable) {
+      throw this.error(`Unbound local variable: ${name}`, span)
     }
 
-    const procedure = this.procedures.get(symbolName)
+    this.stack.push(variable)
+  }
+
+  public evalProcedure(name: string, span: TokenSpan) {
+    const procedure = this.procedures.get(name)
     if (!procedure) {
-      throw this.error(`Unbound procedure: ${symbolName}`, symbolSpan)
+      throw this.error(`Unbound procedure: ${name}`, span)
     }
 
-    const procedureInfo: ProcedureInfo = {
-      name: symbolName,
-      callKeywordSpan: symbolSpan,
-    }
+    const procedureInfo: ProcedureInfo = { name, callKeywordSpan: span }
 
     switch (procedure.kind) {
       case ProcedureKind.Native:
@@ -171,11 +139,11 @@ export class Context {
     return this.currentProcedureInfo?.name
   }
 
-  public callKeywordSpan(): ParserSpan | undefined {
+  public callKeywordSpan(): TokenSpan | undefined {
     return this.currentProcedureInfo?.callKeywordSpan
   }
 
-  public error(message: string, span: ParserSpan): VmError {
+  public error(message: string, span: TokenSpan): VmError {
     return new VmError(message, span)
   }
 
@@ -210,9 +178,15 @@ export class Context {
   }
 
   private callNativeProcedure(info: ProcedureInfo, procBody: Object) {
+    if (procBody.kind !== ObjectKind.List) {
+      throw new Unreachable()
+    }
+
     const scopeTemp = new Map(this.currentScope)
 
-    this.callVirtualProcedure(info, (ctx) => ctx.evalObject(procBody))
+    this.callVirtualProcedure(info, (ctx) =>
+      ctx.evalObjectArray(procBody.value),
+    )
     this.currentScope = scopeTemp
   }
 
@@ -231,36 +205,16 @@ export class Context {
 
     switch (object.kind) {
       case ObjectKind.Tuple:
-        const tuple = object.value[0]!
-
-        this.stack.push({ ...object, value: [tuple, isQuoted] })
+        this.stack.push({ ...object, value: { ...object.value, isQuoted } })
 
         break
       case ObjectKind.Symbol:
-        const name = object.value[0]!
-
-        this.stack.push({ ...object, value: [name, isQuoted] })
+        this.stack.push({ ...object, value: { ...object.value, isQuoted } })
 
         break
       default:
         throw new Unreachable()
     }
-  }
-}
-
-export class VmError implements FormattedError {
-  private readonly message: string
-  private readonly span: ParserSpan
-
-  public constructor(message: string, span: ParserSpan) {
-    this.message = message
-    this.span = span
-  }
-
-  public formattedMessage(): string {
-    const { relativeStart, line } = this.span
-
-    return `Error occured during evaluating phase at ${line}:${relativeStart + 1}. ${this.message}.`
   }
 }
 
@@ -272,7 +226,7 @@ function procedurePrint(ctx: Context) {
         // prettier-ignore
         const sequenceValue = object.kind === ObjectKind.List
           ? object.value
-          : object.value[0]!
+          : object.value.objects
 
         for (const elementObject of sequenceValue) {
           printObject(elementObject)
@@ -366,7 +320,7 @@ function procedureProc(ctx: Context) {
     )
   }
 
-  const name = procedureName.value[0]!
+  const { name } = procedureName.value
 
   ctx.addNativeProcedureObject(name, procedureBody)
 }
@@ -384,7 +338,7 @@ function procedureEval(ctx: Context) {
     )
   }
 
-  ctx.evalObject(stackObject)
+  ctx.evalObjectSingle(stackObject)
 }
 
 function procedurePanic(ctx: Context) {
@@ -446,7 +400,7 @@ function procedureInclude(ctx: Context) {
   }
 
   const moduleContext = new Context(moduleParentPath)
-  moduleContext.eval(moduleContent)
+  moduleContext.evalString(moduleContent)
 
   for (const [procName, proc] of moduleContext.procedures) {
     if (proc.kind === ProcedureKind.Virtual) {
@@ -605,4 +559,37 @@ function procedureArithmetic(ctx: Context) {
       span: ctx.callKeywordSpan()!,
     })
   })
+}
+
+export type VirtualProcedure = (ctx: Context) => void
+
+enum ProcedureKind {
+  Native,
+  Virtual,
+}
+
+type Procedure =
+  | { kind: ProcedureKind.Native; value: Object }
+  | { kind: ProcedureKind.Virtual; value: VirtualProcedure }
+
+type ProcedureInfo = {
+  name: string
+  // Used for error logging during procedure call
+  callKeywordSpan: TokenSpan
+}
+
+export class VmError implements FormattedError {
+  private readonly message: string
+  private readonly span: TokenSpan
+
+  public constructor(message: string, span: TokenSpan) {
+    this.message = message
+    this.span = span
+  }
+
+  public formattedMessage(): string {
+    const { relativeStart, line } = this.span
+
+    return `Error occured during evaluating phase at ${line}:${relativeStart + 1}. ${this.message}.`
+  }
 }
