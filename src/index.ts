@@ -3,16 +3,26 @@ import { resolve as resolvePath } from "node:path"
 
 import arg from "arg"
 
-import { Tokenizer, TokenKind } from "./tokenizer.ts"
-import { Context } from "./vm.ts"
-import { type FormattedError } from "./error.ts"
+import { extractTokens, TokenKind } from "./tokenizer.ts"
+import { VirtualMachine } from "./vm.ts"
 import { extractModuleParentPath } from "./utils.ts"
+import type { AoclaError } from "./error.ts"
 
 const args = arg({
   "--token-list": Boolean,
+  "--command": String,
 
   "-t": "--token-list",
+  "-c": "--command",
 })
+
+const command = args["--command"]
+
+if (command) {
+  evalContent(command, null)
+
+  process.exit(0)
+}
 
 if (args._.length < 1) {
   console.error("Missing path")
@@ -22,31 +32,31 @@ if (args._.length < 1) {
 const filePath = args._[0]!
 const [fileContent, rootModulePath] = readFile(filePath)
 
-if (args["--token-list"]) {
+const tokenList = args["--token-list"]
+
+if (tokenList) {
   printTokenList(fileContent)
 } else {
-  evalFile(fileContent, rootModulePath)
+  evalContent(fileContent, rootModulePath)
 }
 
 function printTokenList(source: string) {
-  const t = new Tokenizer(source)
-  const tokens = t.extractTokens()
+  const tokens = extractTokens(source)
 
   for (const token of tokens) {
     console.log(`\n${token.string} = ${TokenKind[token.kind]};`)
   }
 }
 
-function evalFile(fileContent: string, rootModulePath: string) {
-  const vmContext = new Context(rootModulePath)
+function evalContent(content: string, rootModulePath: string | null) {
+  const virtualMachine = new VirtualMachine(rootModulePath)
 
   try {
-    vmContext.evalString(fileContent)
+    virtualMachine.evalString(content)
   } catch (err) {
-    const isFormattedError = (x: any): x is FormattedError =>
-      "formattedMessage" in x
+    const isFormattedError = (x: any): x is AoclaError => "formattedString" in x
 
-    const message = isFormattedError(err) ? err.formattedMessage() : String(err)
+    const message = isFormattedError(err) ? err.formattedString() : String(err)
 
     console.error(message)
   }

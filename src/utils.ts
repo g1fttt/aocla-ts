@@ -20,3 +20,32 @@ export function extractModuleParentPath(modulePath: string): string {
 
   return resolvePath(parentPath)
 }
+
+export interface AbstractIter<T> {
+  next(): T | undefined
+}
+
+export class FlatIter<T> implements AbstractIter<T> {
+  protected index: number = 0
+
+  public constructor(private readonly tokens: Array<T>) {}
+
+  public next(): T | undefined {
+    return this.tokens[this.index++]
+  }
+}
+
+export class TokenIter<T> extends FlatIter<T> {
+  public skipTokenIf(pred: (token: T) => boolean): [T | undefined, boolean] {
+    const token = this.next()
+    if (!token) {
+      return [undefined, false]
+    }
+
+    if (pred(token)) {
+      return [token, true]
+    }
+
+    return [token, false]
+  }
+}

@@ -1,8 +1,9 @@
 [print "\n" print drop] 'println proc
 
-[
-    [0 []]
-    [1 []]
+[(n)
+  @n
+    [0 [@n]]
+    [1 [@n]]
     [(n) [
       @n 1 - fibonacci
       @n 2 - fibonacci
@@ -11,5 +12,4 @@
   match
 ] 'fibonacci proc
 
-30 fibonacci println drop
-
+30 fibonacci println

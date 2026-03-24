@@ -1,41 +1,37 @@
-import { Tokenizer, TokenKind, TokenSpan } from "./tokenizer.ts"
+import { extractTokens, TokenKind, TokenSpan } from "./tokenizer.ts"
 import { type Token } from "./tokenizer.ts"
 
-import { Unreachable, type FormattedError } from "./error.ts"
+import { AoclaError, ErrorKind, UnexpectedEOF, Unreachable } from "./error.ts"
+import { TokenIter } from "./utils.ts"
 
-export class Parser {
-  private readonly tokens: Array<Token>
-  private currentTokenIndex: number
+export function parseString(source: string): RootObject {
+  const parser = new Parser(source)
 
-  private objects: Array<Object>
+  return parser.parsePrimitives()
+}
 
-  // Used inside currentToken() method for throwing error in case of EOF
-  private lastTokenSpan: TokenSpan | undefined
+class Parser {
+  private iter: TokenIter<Token>
+  private objects = new Array<Object>()
 
-  constructor(source: string) {
-    const t = new Tokenizer(source)
-
-    this.tokens = t.extractTokens()
-    this.currentTokenIndex = 0
-
-    this.objects = new Array()
+  public constructor(source: string) {
+    this.iter = new TokenIter(extractTokens(source))
   }
 
-  public parseAST(): Array<Object> {
-    while (!this.isAtEOF()) {
-      try {
-        var currentToken = this.currentTokenAdvance()
-      } catch {
+  public parsePrimitives(): RootObject {
+    while (true) {
+      const token = this.iter.next()
+      if (!token) {
         break
       }
 
-      this.objects.push(this.parseObjectSingle(currentToken))
+      this.objects.push(this.parseObject(token))
     }
 
     return this.objects
   }
 
-  private parseObjectSingle(token: Token): Object {
+  private parseObject(token: Token): Object {
     switch (token.kind) {
       case TokenKind.Numeric:
         return this.parseInteger(token)
@@ -54,7 +50,7 @@ export class Parser {
       case TokenKind.At:
         return this.parseVariable(token)
       default:
-        throw this.error(`Invalid token: ${token.string}`, token.span)
+        throw this.error(token.span, `Invalid token: ${token.string}`)
     }
   }
 
@@ -88,11 +84,14 @@ export class Parser {
 
   private parseVariable(atToken: Token): Object {
     const [nameToken, ok] = this.skipTokenIfIs(TokenKind.Symbol)
+    if (!nameToken) {
+      throw new UnexpectedEOF()
+    }
 
     const combinedSpan = atToken.span.combinedWith(nameToken.span)
 
     if (!ok) {
-      throw this.error("Variable name must be of type Symbol", combinedSpan)
+      throw this.error(combinedSpan, "Variable name must be of type Symbol")
     }
 
     return this.parseSymbol(nameToken.string, combinedSpan, SymbolKind.Variable)
@@ -115,25 +114,29 @@ export class Parser {
   }
 
   private parseQuoted(quoteToken: Token): Object {
-    const [currentToken, ok] = this.skipTokenIfAny([
+    const [token, ok] = this.skipTokenIfAny([
       TokenKind.Symbol,
       TokenKind.LeftParen,
     ])
 
-    const combinedSpan = quoteToken.span.combinedWith(currentToken.span)
+    if (!token) {
+      throw new UnexpectedEOF()
+    }
+
+    const combinedSpan = quoteToken.span.combinedWith(token.span)
 
     if (!ok) {
       throw this.error(
-        `Found invalid token inside quoted expression: ${currentToken.string}`,
         combinedSpan,
+        `Found invalid token inside quoted expression: ${token.string}`,
       )
     }
 
-    switch (currentToken.kind) {
+    switch (token.kind) {
       case TokenKind.Symbol:
-        return this.parseProcedure(currentToken, { isQuoted: true })
+        return this.parseProcedure(token, { isQuoted: true })
       case TokenKind.LeftParen:
-        return this.parseTuple(currentToken, { isQuoted: true })
+        return this.parseTuple(token, { isQuoted: true })
       default:
         throw new Unreachable()
     }
@@ -141,19 +144,22 @@ export class Parser {
 
   private parseBoolean(hashToken: Token): Object {
     const [stateToken, ok] = this.skipTokenIfIs(TokenKind.Symbol)
+    if (!stateToken) {
+      throw new UnexpectedEOF()
+    }
 
     const combinedSpan = hashToken.span.combinedWith(stateToken.span)
 
     if (!ok) {
-      throw this.error("Boolean state must be of type Symbol", combinedSpan)
+      throw this.error(combinedSpan, "Boolean state must be of type Symbol")
     }
 
     const state = { t: true, f: false }[stateToken.string]
 
     if (state === undefined) {
       throw this.error(
-        "Boolean state must be either 't(rue)' or 'f(alse)'",
         combinedSpan,
+        "Boolean state must be either 't(rue)' or 'f(alse)'",
       )
     }
 
@@ -165,15 +171,18 @@ export class Parser {
     let rightBracketSpan: TokenSpan
 
     while (true) {
-      const currentToken = this.currentTokenAdvance()
+      const token = this.iter.next()
+      if (!token) {
+        throw new UnexpectedEOF()
+      }
 
-      if (currentToken.kind === TokenKind.RightBracket) {
-        rightBracketSpan = currentToken.span
+      if (token.kind === TokenKind.RightBracket) {
+        rightBracketSpan = token.span
 
         break
       }
 
-      objects.push(this.parseObjectSingle(currentToken))
+      objects.push(this.parseObject(token))
     }
 
     const combinedSpan = leftBracketToken.span.combinedWith(rightBracketSpan)
@@ -189,24 +198,27 @@ export class Parser {
     let rightParenSpan: TokenSpan
 
     outerLoop: while (true) {
-      const currentToken = this.currentTokenAdvance()
+      const token = this.iter.next()
+      if (!token) {
+        throw new UnexpectedEOF()
+      }
 
-      switch (currentToken.kind) {
+      switch (token.kind) {
         case TokenKind.Symbol:
-          const { string, span } = currentToken
+          const { string, span } = token
 
           const symbol = this.parseSymbol(string, span, SymbolKind.Variable)
           objects.push(symbol)
 
           break
         case TokenKind.RightParen:
-          rightParenSpan = currentToken.span
+          rightParenSpan = token.span
 
           break outerLoop
         default:
           throw this.error(
-            `Found invalid token inside Tuple: ${currentToken.string}`,
-            currentToken.span,
+            token.span,
+            `Found invalid token inside Tuple: ${token.string}`,
           )
       }
     }
@@ -217,55 +229,23 @@ export class Parser {
     return { kind: ObjectKind.Tuple, value, span: combinedSpan }
   }
 
-  private isAtEOF(): boolean {
-    return this.currentTokenIndex >= this.tokens.length
+  private skipTokenIfAny(
+    kinds: Array<TokenKind>,
+  ): [Token | undefined, boolean] {
+    return this.iter.skipTokenIf((t) => kinds.includes(t.kind))
   }
 
-  private currentToken(args = { offset: 0 }): Token {
-    const token = this.tokens[this.currentTokenIndex + args.offset]
-    if (!token) {
-      throw this.error("Unexpected EOF", this.lastTokenSpan!)
-    }
-
-    this.lastTokenSpan = token.span
-
-    return token
+  private skipTokenIfIs(kind: TokenKind): [Token | undefined, boolean] {
+    return this.iter.skipTokenIf((t) => t.kind === kind)
   }
 
-  private skipTokenIf(pred: (kind: TokenKind) => boolean): [Token, boolean] {
-    const token = this.currentToken()
-
-    if (pred(token.kind)) {
-      this.skipToken()
-
-      return [token, true]
-    }
-
-    return [token, false]
-  }
-
-  private skipTokenIfAny(kinds: Array<TokenKind>): [Token, boolean] {
-    return this.skipTokenIf((kind) => kinds.includes(kind))
-  }
-
-  private skipTokenIfIs(kind: TokenKind): [Token, boolean] {
-    return this.skipTokenIf((_kind) => _kind === kind)
-  }
-
-  private currentTokenAdvance(): Token {
-    const token = this.currentToken()
-
-    this.skipToken()
-
-    return token
-  }
-
-  private skipToken() {
-    ++this.currentTokenIndex
-  }
-
-  private error(message: string, span: TokenSpan): ParserError {
-    return new ParserError(message, span.relative.start, span.line)
+  private error(span: TokenSpan, message: string): AoclaError {
+    return new AoclaError({
+      message,
+      kind: ErrorKind.SyntaxError,
+      lineRelativePos: span.relative,
+      line: span.line,
+    })
   }
 }
 
@@ -305,19 +285,3 @@ export type ObjectData =
 export type Object = ObjectData & { span: TokenSpan }
 
 export type RootObject = Array<Object>
-
-export class ParserError implements FormattedError {
-  private readonly message: string
-  private readonly relativeIndex: number
-  private readonly line: number
-
-  public constructor(message: string, relativeIndex: number, line: number) {
-    this.message = message
-    this.relativeIndex = relativeIndex
-    this.line = line
-  }
-
-  public formattedMessage(): string {
-    return `Error occured during parsing phase at ${this.line}:${this.relativeIndex}. ${this.message}.`
-  }
-}

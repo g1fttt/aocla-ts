@@ -1,21 +1,19 @@
-import { type FormattedError } from "./error.ts"
+import { AoclaError, ErrorKind } from "./error.ts"
 
-export class Tokenizer {
-  private readonly source: string
-  private globalIndex: number
-  private tokens: Array<Token>
+export function extractTokens(source: string): Array<Token> {
+  const tokenizer = new Tokenizer(source)
 
-  private relativeIndex: number
-  private line: number
+  return tokenizer.extractTokens()
+}
 
-  public constructor(source: string) {
-    this.source = source
-    this.globalIndex = 0
-    this.tokens = new Array()
+class Tokenizer {
+  private globalIndex = 0
+  private tokens = new Array<Token>()
 
-    this.relativeIndex = 0
-    this.line = 1
-  }
+  private relativeIndex = 0
+  private line = 1
+
+  public constructor(private readonly source: string) {}
 
   public extractTokens(): Array<Token> {
     while (true) {
@@ -28,6 +26,8 @@ export class Tokenizer {
         this.extractInteger()
       } else if (Tokenizer.isSymbol(currentChar)) {
         this.extractSymbol()
+      } else if (Tokenizer.isString(currentChar)) {
+        this.extractString()
       } else if (Tokenizer.isWhitespace(currentChar)) {
         this.skipWhitespace()
 
@@ -62,9 +62,6 @@ export class Tokenizer {
         break
       case "'":
         this.pushToken(TokenKind.SingleQuote)
-        break
-      case '"':
-        this.extractString()
         break
       default:
         throw this.error(`Invalid symbol: ${currentChar}`)
@@ -182,10 +179,6 @@ export class Tokenizer {
     }
   }
 
-  private error(message: string): TokenizerError {
-    return new TokenizerError(message, this.relativeIndex, this.line)
-  }
-
   private tokenStartPos(): [number, number, number] {
     return [this.globalIndex, this.relativeIndex, this.line]
   }
@@ -232,6 +225,10 @@ export class Tokenizer {
     return char >= "0" && char <= "9"
   }
 
+  private static isString(char: string): boolean {
+    return char === '"'
+  }
+
   private static isSymbol(char: string): boolean {
     // prettier-ignore
     const specialSymbols = [
@@ -246,6 +243,15 @@ export class Tokenizer {
       (char >= "A" && char <= "Z") ||
       specialSymbols.includes(char)
     )
+  }
+
+  private error(message: string): AoclaError {
+    return new AoclaError({
+      message,
+      kind: ErrorKind.SyntaxError,
+      lineRelativePos: { start: this.relativeIndex, end: -1 },
+      line: this.line,
+    })
   }
 }
 
@@ -296,20 +302,4 @@ export enum TokenKind {
   SingleQuote,
   Hash,
   At,
-}
-
-export class TokenizerError implements FormattedError {
-  private readonly message: string
-  private readonly relativeIndex: number
-  private readonly line: number
-
-  public constructor(message: string, relativeIndex: number, line: number) {
-    this.message = message
-    this.relativeIndex = relativeIndex
-    this.line = line
-  }
-
-  public formattedMessage(): string {
-    return `Error occured during tokenizing phase at ${this.line}:${this.relativeIndex}. ${this.message}.`
-  }
 }
