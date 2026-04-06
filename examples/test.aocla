@@ -1,0 +1,3 @@
+[print print print] 'test-proc proc
+
+#t [] 3 test-proc

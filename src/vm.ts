@@ -2,17 +2,18 @@ import { readFileSync } from "node:fs"
 
 import type {
   Command,
-  Block,
   Match,
   DeclProcedure,
   CallProcedure,
   DeclVariables,
   PushVariableToStack,
   IncludeModule,
+  LazyBlock,
+  Block,
 } from "./ir-builder.ts"
 import { buildIR, CommandKind } from "./ir-builder.ts"
 
-import { AoclaError, ErrorKind, Unimplemented, Unreachable } from "./error.ts"
+import { AoclaError, ErrorKind, Unreachable } from "./error.ts"
 import { type TokenSpan } from "./tokenizer.ts"
 import { parseString, ObjectKind, type Object } from "./parser.ts"
 import { extractModuleName, extractModuleParentPath } from "./utils.ts"
@@ -29,7 +30,11 @@ export class VirtualMachine {
   }
 
   public evalString(source: string) {
-    const ir = buildIR(parseString(source))
+    this.evalLazyBlock(parseString(source))
+  }
+
+  public evalLazyBlock(block: LazyBlock) {
+    const ir = buildIR(block)
 
     this.evalCommandList(ir)
   }
@@ -56,7 +61,6 @@ export class VirtualMachine {
         this.evalDeclVariables(command.value, command.span)
 
         break
-
       case CommandKind.PushVariableToStack:
         this.evalPushVariableToStack(command.value, command.span)
 
@@ -69,30 +73,23 @@ export class VirtualMachine {
         this.evalIncludeModule(command.value, command.span)
 
         break
-      case CommandKind.Block:
-        this.evalCommandList(command.value)
-
-        break
       default:
         throw new Unreachable()
     }
   }
 
   public addNativeProcedure({ name, body }: DeclProcedure) {
-    this.addNativeProcedureCommand(name, body)
+    this.addNativeProcedureCommand(name, buildIR(body))
+  }
+
+  public addNativeProcedureString(name: string, source: string) {
+    this.addNativeProcedure({ name, body: parseString(source) })
   }
 
   public addNativeProcedureCommand(name: string, body: Block) {
     this.procedures.set(name, {
       kind: ProcedureKind.Native,
       value: body,
-    })
-  }
-
-  public addNativeProcedureString(name: string, source: string) {
-    this.procedures.set(name, {
-      kind: ProcedureKind.Native,
-      value: buildIR(parseString(source)),
     })
   }
 
@@ -188,7 +185,7 @@ export class VirtualMachine {
       }
 
       if (compareObjects(selectorResult, patternResult) === Ordering.Equal) {
-        this.evalCommandList(handler)
+        this.evalLazyBlock(handler)
 
         return
       }
@@ -204,7 +201,7 @@ export class VirtualMachine {
     const { pattern, handler } = defaultBranch
 
     this.evalCommand(pattern)
-    this.evalCommandList(handler)
+    this.evalLazyBlock(handler)
   }
 
   private evalIncludeModule({ path }: IncludeModule, symbolSpan: TokenSpan) {
@@ -255,19 +252,21 @@ export class VirtualMachine {
 
     const span = a.span.combinedWith(b.span)
 
-    if (a.kind !== ObjectKind.Integer || b.kind !== ObjectKind.Integer) {
+    if (a.kind !== ObjectKind.Number || b.kind !== ObjectKind.Number) {
       throw this.error(ErrorKind.TypeMismatch, span)
     }
 
     this.objectStack.push({
-      kind: ObjectKind.Integer,
+      kind: ObjectKind.Number,
       value: op(a.value, b.value),
       span,
     })
   }
 
   private setupBuiltins() {
+    this.addVirtualProcedure("panic", (vm) => vm.procPanic())
     this.addVirtualProcedure("print", (vm) => vm.procPrint())
+    this.addVirtualProcedure("eval", (vm) => vm.procEval())
     this.addVirtualProcedure("+", (vm) => vm.handleArithmetic((a, b) => a + b))
     this.addVirtualProcedure("-", (vm) => vm.handleArithmetic((a, b) => a - b))
     this.addVirtualProcedure("*", (vm) => vm.handleArithmetic((a, b) => a * b))
@@ -316,11 +315,23 @@ export class VirtualMachine {
 
     process.stdout.write(objectToString(object))
   }
+
+  public procEval() {
+    const object = this.objectStack.pop()
+    if (!object) {
+      throw this.error(
+        ErrorKind.OutOfStack,
+        this.currentProcedureInfo!.callKeywordSpan,
+      )
+    }
+
+    this.evalLazyBlock(object.value as LazyBlock)
+  }
 }
 
 function objectToString(object: Object): string {
   switch (object.kind) {
-    case ObjectKind.Integer:
+    case ObjectKind.Number:
     case ObjectKind.Boolean:
     case ObjectKind.String:
       return String(object.value)
@@ -347,8 +358,8 @@ function objectToString(object: Object): string {
   }
 }
 
-function compareObjects(a: Object, b: Object): Ordering {
-  if ([a.kind, b.kind].every((k) => k === ObjectKind.Integer)) {
+function compareObjects(a: Object, b: Object): Ordering | null {
+  if (a.kind === ObjectKind.Number && b.kind === ObjectKind.Number) {
     if (a.value === b.value) {
       return Ordering.Equal
     } else if (a.value > b.value) {
@@ -356,10 +367,12 @@ function compareObjects(a: Object, b: Object): Ordering {
     } else {
       return Ordering.Less
     }
+  } else if (a.kind === ObjectKind.Boolean && b.kind === ObjectKind.Boolean) {
+    if (a.value === b.value) {
+      return Ordering.Equal
+    }
   }
-
-  // FIXME: Only integers support comparing ATM
-  throw new Unimplemented()
+  return null
 }
 
 enum Ordering {
@@ -369,9 +382,9 @@ enum Ordering {
 }
 
 type ProcedureInfo = {
-  name: string
+  readonly name: string
   // Used for error logging during procedure call
-  callKeywordSpan: TokenSpan
+  readonly callKeywordSpan: TokenSpan
 }
 
 export type VirtualProcedure = (vm: VirtualMachine) => void

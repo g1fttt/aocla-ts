@@ -2,7 +2,7 @@ import type { RootObject, Object, Symbol, Tuple } from "./parser.ts"
 import { ObjectKind, SymbolKind } from "./parser.ts"
 
 import { AoclaError, ErrorKind, Unimplemented } from "./error.ts"
-import { type TokenSpan } from "./tokenizer"
+import { type TokenSpan } from "./tokenizer.ts"
 
 export function buildIR(root: RootObject): Array<Command> {
   const transformer = new CommandTransformer()
@@ -26,22 +26,13 @@ class CommandTransformer {
 
   private transformSingle(object: Object) {
     switch (object.kind) {
-      case ObjectKind.Integer:
+      case ObjectKind.Number:
       case ObjectKind.String:
       case ObjectKind.Boolean:
+      case ObjectKind.List:
         this.commandStack.push({
           kind: CommandKind.Value,
           value: { object },
-          span: object.span,
-        })
-
-        break
-      case ObjectKind.List:
-        const transformer = new CommandTransformer()
-
-        this.commandStack.push({
-          kind: CommandKind.Block,
-          value: transformer.transform(object.value),
           span: object.span,
         })
 
@@ -146,7 +137,7 @@ class CommandTransformer {
 
   private handleProc(parentSpan: TokenSpan) {
     const [procSymbol, _] = this.popSymbol(parentSpan)
-    const [procBody, procBodySpan] = this.popBlock(parentSpan)
+    const [procBody, procBodySpan] = this.popList(parentSpan)
     const span = procBodySpan.combinedWith(parentSpan)
 
     this.commandStack.push({
@@ -171,7 +162,7 @@ class CommandTransformer {
   }
 
   private handleMatch(parentSpan: TokenSpan) {
-    let branches = new Map<Command, Block>()
+    let branches = new Map<Command, LazyBlock>()
 
     let selector: Command | undefined
     let defaultBranch: MatchDefaultBranch | undefined
@@ -184,25 +175,32 @@ class CommandTransformer {
 
       switch (command.kind) {
         case CommandKind.Value:
+          const object = command.value.object
+          if (object.kind === ObjectKind.List) {
+            break
+          }
+
+          selector = command
+
+          break loop
         case CommandKind.PushVariableToStack:
           selector = command
 
           break loop
-        case CommandKind.Block:
-          break
         default:
           throw this.error(ErrorKind.SemanticError, command.span)
       }
 
-      const branchBlock = command.value
-      if (branchBlock.length !== 2) {
+      const branchLazyBlock = command.value.object.value as LazyBlock
+      if (branchLazyBlock.length !== 2) {
         throw this.error(ErrorKind.SemanticError, command.span)
       }
 
-      const [pattern, handler] = branchBlock as [Command, Command]
+      const [_lazyPattern, lazyHandler] = branchLazyBlock as [Object, Object]
+      const [pattern, _handler] = buildIR(branchLazyBlock) as [Command, Command]
 
-      if (handler.kind !== CommandKind.Block) {
-        throw this.error(ErrorKind.TypeMismatch, handler.span)
+      if (lazyHandler.kind !== ObjectKind.List) {
+        throw this.error(ErrorKind.TypeMismatch, pattern.span)
       }
 
       switch (pattern.kind) {
@@ -216,7 +214,7 @@ class CommandTransformer {
             )
           }
 
-          branches.set(pattern, handler.value)
+          branches.set(pattern, lazyHandler.value)
 
           break
         case CommandKind.DeclVariables:
@@ -228,7 +226,7 @@ class CommandTransformer {
             )
           }
 
-          defaultBranch = { pattern, handler: handler.value }
+          defaultBranch = { pattern, handler: lazyHandler.value }
 
           break
         default:
@@ -251,29 +249,14 @@ class CommandTransformer {
       throw this.error(ErrorKind.OutOfStack, parentSpan)
     }
 
-    const symbolCommandValue = symbolCommand.value as Value | undefined
-    const symbolCommandObject = symbolCommandValue?.object?.value as
-      | Symbol
-      | undefined
+    const commandValue = symbolCommand.value as Value
+    const symbol = commandValue?.object?.value as Symbol | undefined
 
-    if (!symbolCommandObject) {
-      throw this.error(ErrorKind.TypeMismatch, parentSpan)
+    if (!symbol) {
+      throw this.error(ErrorKind.TypeMismatch, symbolCommand.span)
     }
 
-    return [symbolCommandObject, symbolCommand.span]
-  }
-
-  private popBlock(parentSpan: TokenSpan): [Block, TokenSpan] {
-    const blockCommand = this.commandStack.pop()
-    if (!blockCommand) {
-      throw this.error(ErrorKind.OutOfStack, parentSpan)
-    }
-
-    if (blockCommand.kind !== CommandKind.Block) {
-      throw this.error(ErrorKind.TypeMismatch, parentSpan)
-    }
-
-    return [blockCommand.value, blockCommand.span]
+    return [symbol, symbolCommand.span]
   }
 
   private popString(parentSpan: TokenSpan): [string, TokenSpan] {
@@ -282,16 +265,30 @@ class CommandTransformer {
       throw this.error(ErrorKind.OutOfStack, parentSpan)
     }
 
-    const stringCommandValue = stringCommand.value as Value | undefined
-    const stringCommandObject = stringCommandValue?.object?.value as
-      | string
-      | undefined
+    const commandValue = stringCommand.value as Value
+    const string = commandValue?.object?.value as string | undefined
 
-    if (!stringCommandObject) {
-      throw this.error(ErrorKind.TypeMismatch, parentSpan)
+    if (!string) {
+      throw this.error(ErrorKind.TypeMismatch, stringCommand.span)
     }
 
-    return [stringCommandObject, stringCommand.span]
+    return [string, stringCommand.span]
+  }
+
+  private popList(parentSpan: TokenSpan): [Array<Object>, TokenSpan] {
+    const listCommand = this.commandStack.pop()
+    if (!listCommand) {
+      throw this.error(ErrorKind.OutOfStack, parentSpan)
+    }
+
+    const commandValue = listCommand.value as Value
+    const list = commandValue?.object?.value as Array<Object> | undefined
+
+    if (!list) {
+      throw this.error(ErrorKind.TypeMismatch, listCommand.span)
+    }
+
+    return [list, listCommand.span]
   }
 
   private error(
@@ -321,7 +318,7 @@ export enum CommandKind {
 
 export type DeclProcedure = {
   readonly name: string
-  readonly body: Block
+  readonly body: LazyBlock
 }
 
 export type CallProcedure = {
@@ -341,21 +338,19 @@ export type PushVariableToStack = {
 }
 
 export type MatchDefaultBranch = {
-  pattern: Command
-  handler: Block
+  readonly pattern: Command
+  readonly handler: LazyBlock
 }
 
 export type Match = {
   readonly selector: Command
-  readonly branches: Map<Command, Block>
+  readonly branches: Map<Command, LazyBlock>
   readonly defaultBranch: MatchDefaultBranch | undefined
 }
 
 export type Value = {
   readonly object: Object
 }
-
-export type Block = Array<Command>
 
 export type CommandData =
   | { kind: CommandKind.DeclProcedure; value: DeclProcedure }
@@ -365,6 +360,8 @@ export type CommandData =
   | { kind: CommandKind.PushVariableToStack; value: PushVariableToStack }
   | { kind: CommandKind.Match; value: Match }
   | { kind: CommandKind.Value; value: Value }
-  | { kind: CommandKind.Block; value: Block }
 
 export type Command = CommandData & { span: TokenSpan }
+
+export type Block = Array<Command>
+export type LazyBlock = Array<Object>

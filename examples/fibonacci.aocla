@@ -1,4 +1,4 @@
-[print "\n" print drop] 'println proc
+[print "\n" print] 'println proc
 
 [(n)
   @n

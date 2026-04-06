@@ -56,7 +56,7 @@ class Parser {
 
   private parseInteger(token: Token): Object {
     return {
-      kind: ObjectKind.Integer,
+      kind: ObjectKind.Number,
       value: parseInt(token.string),
       span: token.span,
     }
@@ -250,7 +250,7 @@ class Parser {
 }
 
 export enum ObjectKind {
-  Integer,
+  Number,
   List,
   Tuple,
   String,
@@ -275,7 +275,7 @@ export type Tuple = {
 }
 
 export type ObjectData =
-  | { kind: ObjectKind.Integer; value: number }
+  | { kind: ObjectKind.Number; value: number }
   | { kind: ObjectKind.List; value: Array<Object> }
   | { kind: ObjectKind.Tuple; value: Tuple }
   | { kind: ObjectKind.String; value: string }

@@ -39,6 +39,6 @@ export class AoclaError extends Error {
   }
 
   public formattedString(): string {
-    return `[${ErrorKind[this.info.kind]}] -- ${this.message ? this.message : "No message provided"} ${this.info.line}:${this.info.lineRelativePos.start}`
+    return `[${ErrorKind[this.info.kind]}] -- ${this.message ? this.message : "No message provided"} ${this.info.line}:${this.info.lineRelativePos.start + 1}`
   }
 }

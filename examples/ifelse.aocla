@@ -9,5 +9,3 @@
   ["True\n" print]
   ["False\n" print]
 ifelse
-
-drop
