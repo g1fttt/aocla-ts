@@ -167,7 +167,7 @@ class CommandTransformer {
     let selector: Command | undefined
     let defaultBranch: MatchDefaultBranch | undefined
 
-    loop: while (true) {
+    outerLoop: while (true) {
       const command = this.commandStack.pop()
       if (!command) {
         throw this.error(ErrorKind.SemanticError, parentSpan)
@@ -182,11 +182,11 @@ class CommandTransformer {
 
           selector = command
 
-          break loop
+          break outerLoop
         case CommandKind.PushVariableToStack:
           selector = command
 
-          break loop
+          break outerLoop
         default:
           throw this.error(ErrorKind.SemanticError, command.span)
       }
@@ -196,12 +196,17 @@ class CommandTransformer {
         throw this.error(ErrorKind.SemanticError, command.span)
       }
 
-      const [_lazyPattern, lazyHandler] = branchLazyBlock as [Object, Object]
-      const [pattern, _handler] = buildIR(branchLazyBlock) as [Command, Command]
+      // [10 ["Ten\n" print]]
+      // ----^^^^^^^^^^^^^^^-
+      const lazyHandler = branchLazyBlock[1]!
 
       if (lazyHandler.kind !== ObjectKind.List) {
-        throw this.error(ErrorKind.TypeMismatch, pattern.span)
+        throw this.error(ErrorKind.TypeMismatch, lazyHandler.span)
       }
+
+      // [10 ["Ten\n" print]]
+      // -^^-----------------
+      const pattern = buildIR(branchLazyBlock)[0]!
 
       switch (pattern.kind) {
         case CommandKind.Value:
@@ -313,7 +318,6 @@ export enum CommandKind {
   PushVariableToStack,
   Match,
   Value,
-  Block,
 }
 
 export type DeclProcedure = {

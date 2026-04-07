@@ -1,15 +1,38 @@
 {
   "name": "aocla-ts",
-  "module": "src/index.ts",
-  "type": "module",
+  "version": "1.0.0",
   "private": true,
+  "description": "To install dependencies:",
+  "homepage": "https://github.com/g1fttt/aocla-ts#readme",
+  "bugs": {
+    "url": "https://github.com/g1fttt/aocla-ts/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/g1fttt/aocla-ts.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "dist/index.js",
+  "directories": {
+    "example": "examples",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "arg": "^5.0.2"
+  },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/node": "^25.5.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
-  "dependencies": {
-    "arg": "^5.0.2"
-  }
+  "module": "src/index.ts"
 }
