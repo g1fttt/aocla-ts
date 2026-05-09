@@ -1,0 +1,3 @@
+["int" ["int"]] 'ffi-fibonacci "fib" "cool_lib" proc-ffi
+
+30 ffi-fibonacci print "\n" print

@@ -224,7 +224,7 @@ class Parser {
     }
 
     const combinedSpan = leftParenToken.span.combinedWith(rightParenSpan)
-    const value: Tuple = { objects, isQuoted: args.isQuoted }
+    const value: ObjectTuple = { objects, isQuoted: args.isQuoted }
 
     return { kind: ObjectKind.Tuple, value, span: combinedSpan }
   }
@@ -269,7 +269,7 @@ export type Symbol = {
   readonly isQuoted: boolean
 }
 
-export type Tuple = {
+export type ObjectTuple = {
   readonly objects: Array<Object>
   readonly isQuoted: boolean
 }
@@ -277,7 +277,7 @@ export type Tuple = {
 export type ObjectData =
   | { kind: ObjectKind.Number; value: number }
   | { kind: ObjectKind.List; value: Array<Object> }
-  | { kind: ObjectKind.Tuple; value: Tuple }
+  | { kind: ObjectKind.Tuple; value: ObjectTuple }
   | { kind: ObjectKind.String; value: string }
   | { kind: ObjectKind.Boolean; value: boolean }
   | { kind: ObjectKind.Symbol; value: Symbol }

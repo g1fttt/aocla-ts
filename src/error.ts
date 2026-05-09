@@ -1,3 +1,5 @@
+import type { Span } from "./tokenizer"
+
 export class Unreachable extends Error {
   public constructor() {
     super("Unreachable")
@@ -23,13 +25,14 @@ export enum ErrorKind {
   TypeMismatch,
   SyntaxError,
   SemanticError,
+  Undefined,
   User,
 }
 
 export type ErrorInfo = {
   readonly message?: string
   readonly kind: ErrorKind
-  readonly lineRelativePos: { start: number; end: number }
+  readonly lineRelativePos: Span
   readonly line: number
 }
 
