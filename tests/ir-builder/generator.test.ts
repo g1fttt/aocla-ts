@@ -107,7 +107,7 @@ test("procedure decl-call generation", () => {
   expect(byteCode).toMatchObject([
     {
       kind: CommandKind.RelativeJump,
-      value: 3,
+      value: 4,
     },
     {
       kind: CommandKind.PushValueToStack,

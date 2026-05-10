@@ -109,7 +109,7 @@ export class ByteCodeGenerator {
 
     const relativeJump: Command = {
       kind: CommandKind.RelativeJump,
-      value: commandSequence.length + 1 /* due to return command */,
+      value: commandSequence.length + 2 /* due to return command */,
       span,
     }
 
