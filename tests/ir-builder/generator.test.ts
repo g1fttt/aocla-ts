@@ -128,43 +128,92 @@ test("procedure decl-call generation", () => {
   ])
 })
 
-// test("match expression generation", () => {
-//   const byteCode = generateByteCode(`
-//     3 (n)
-//
-//     @n
-//       [0 ["Zero"]]
-//       [1 ["One"]]
-//       [(x) ["Default"]]
-//     match
-//   `)
-//
-//   expect(byteCode).toMatchObject([
-//     {
-//       kind: CommandKind.PushValueToStack,
-//       value: {
-//         kind: ValueKind.Number,
-//         value: 3,
-//       },
-//     },
-//     {
-//       kind: CommandKind.DeclVariables,
-//       value: ["n"],
-//     },
-//     {
-//       kind: CommandKind.PushVariableToStack,
-//       value: "n",
-//     },
-//     {
-//       kind: CommandKind.PushValueToStack,
-//       value: {
-//         kind: ValueKind.Number,
-//         value: 0,
-//       },
-//     },
-//     {
-//       kind: CommandKind.RelativeJumpIfNot,
-//       value: 2,
-//     },
-//   ])
-// })
+test("match expression generation", () => {
+  const byteCode = generateByteCode(`
+    3 (n)
+
+    @n
+      [0 ["Zero"]]
+      [1 ["One"]]
+      [(x) ["Default"]]
+    match
+  `)
+
+  expect(byteCode).toMatchObject([
+    {
+      kind: CommandKind.PushValueToStack,
+      value: {
+        kind: ValueKind.Number,
+        value: 3,
+      },
+    },
+    {
+      kind: CommandKind.DeclVariables,
+      value: ["n"],
+    },
+
+    {
+      kind: CommandKind.PushVariableToStack,
+      value: "n",
+    },
+    {
+      kind: CommandKind.PushValueToStack,
+      value: {
+        kind: ValueKind.Number,
+        value: 0,
+      },
+    },
+    { kind: CommandKind.Compare },
+    {
+      kind: CommandKind.RelativeJumpNeq,
+      value: 2,
+    },
+    {
+      kind: CommandKind.PushValueToStack,
+      value: {
+        kind: ValueKind.String,
+        value: "Zero",
+      },
+    },
+
+    {
+      kind: CommandKind.PushVariableToStack,
+      value: "n",
+    },
+    {
+      kind: CommandKind.PushValueToStack,
+      value: {
+        kind: ValueKind.Number,
+        value: 1,
+      },
+    },
+    { kind: CommandKind.Compare },
+    {
+      kind: CommandKind.RelativeJumpNeq,
+      value: 2,
+    },
+    {
+      kind: CommandKind.PushValueToStack,
+      value: {
+        kind: ValueKind.String,
+        value: "One",
+      },
+    },
+
+    {
+      kind: CommandKind.PushVariableToStack,
+      value: "n",
+    },
+    {
+      kind: CommandKind.DeclVariables,
+      value: ["x"],
+    },
+    {
+      kind: CommandKind.PushValueToStack,
+      value: {
+        kind: ValueKind.String,
+        value: "Default",
+      },
+    },
+  ])
+})

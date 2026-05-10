@@ -126,6 +126,42 @@ export class ByteCodeGenerator {
     { selector, branches, defaultBranch }: Match,
     span: TokenSpan,
   ) {
-    // TODO: !!!
+    const reversedBranches = branches.entries().toArray().toReversed()
+
+    for (const [pattern, handler] of reversedBranches) {
+      const generator = new ByteCodeGenerator()
+      const commandSequence = generator.generate(handler)
+
+      const compare: Command = {
+        kind: CommandKind.Compare,
+        value: undefined,
+        span,
+      }
+
+      const relativeJumpNeq: Command = {
+        kind: CommandKind.RelativeJumpNeq,
+        value: commandSequence.length + 1,
+        span,
+      }
+
+      this.commandSequence.push(
+        selector,
+        pattern,
+        compare,
+        relativeJumpNeq,
+        ...commandSequence,
+      )
+    }
+
+    if (!defaultBranch) {
+      return
+    }
+
+    const { pattern, handler } = defaultBranch
+
+    const generator = new ByteCodeGenerator()
+    const commandSequence = generator.generate(handler)
+
+    this.commandSequence.push(selector, pattern, ...commandSequence)
   }
 }
